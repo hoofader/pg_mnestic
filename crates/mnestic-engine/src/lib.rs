@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use mnestic_core::{
-    decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, ResolveAction,
+    decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, QueryRewriter,
+    Reranker, ResolveAction, Scored,
 };
 use mnestic_store::{NewMemoryFull, Store};
 use uuid::Uuid;
@@ -42,11 +43,18 @@ const STATIC_CONFIDENCE: f32 = 0.8;
 const STATIC_FACTS_CAP: i64 = 50;
 const DYNAMIC_CTX_CAP: i64 = 20;
 
+/// Candidate pool pulled before reranking, when a reranker is configured. The
+/// reranker reorders this pool and the top `limit` are returned. RECALL_SQL also
+/// clamps each signal's fan-out to at least 50, so the two agree for `limit <= 50`.
+const RERANK_POOL: i64 = 50;
+
 pub struct Engine {
     store: Store,
     embedder: Arc<dyn Embedder>,
     extractor: Arc<dyn Extractor>,
     ontology: Ontology,
+    reranker: Option<Arc<dyn Reranker>>,
+    rewriter: Option<Arc<dyn QueryRewriter>>,
 }
 
 impl Engine {
@@ -56,6 +64,8 @@ impl Engine {
             embedder,
             extractor,
             ontology: Ontology::starter(),
+            reranker: None,
+            rewriter: None,
         }
     }
 
@@ -65,18 +75,35 @@ impl Engine {
         self
     }
 
+    /// Add a reranker. Recall then pulls a larger candidate pool, reranks it against
+    /// the user's original query, and returns the top `limit`.
+    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
+        self.reranker = Some(reranker);
+        self
+    }
+
+    /// Add a query rewriter applied to the query before retrieval (embedding +
+    /// lexical). Reranking still scores against the original query. Expansion trades
+    /// lexical precision for recall (more tokens match more rows) and the expanded
+    /// text is what gets embedded, so it is meant to pair with a reranker that
+    /// repairs the precision loss.
+    pub fn with_rewriter(mut self, rewriter: Arc<dyn QueryRewriter>) -> Self {
+        self.rewriter = Some(rewriter);
+        self
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }
 
-    /// Recall the actor's most relevant memories for a query: embed the query, then
-    /// run hybrid (vector + lexical) retrieval ranked by recency and confidence.
+    /// Recall the actor's most relevant memories for a query. When a rewriter is set,
+    /// the query is expanded for retrieval (embedding + lexical). Hybrid retrieval
+    /// then pulls a candidate pool, and when a reranker is set the pool is reranked
+    /// against the user's original query before the top `limit` are returned.
     ///
     /// The signature is provisional: it scopes by actor only (no `container_tags`
-    /// filter yet, unlike the supermemory `containerTag` model), exposes no
-    /// `search_mode`/`threshold`/`rerank`, and returns the store row type. Container
-    /// filtering, cross-encoder reranking, and the document/chunk path are later
-    /// increments.
+    /// filter yet), exposes no `search_mode`/`threshold`, and returns the store row
+    /// type. Container filtering and the document/chunk path are later increments.
     pub async fn recall(
         &self,
         tenant_id: Uuid,
@@ -84,13 +111,53 @@ impl Engine {
         query: &str,
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
-        let mut embeddings = self.embedder.embed(&[query.to_string()]).await?;
+        let retrieval_query = match &self.rewriter {
+            Some(r) => r.rewrite(query).await?,
+            None => query.to_string(),
+        };
+
+        let mut embeddings = self.embedder.embed(std::slice::from_ref(&retrieval_query)).await?;
         let qvec = embeddings.pop().unwrap_or_default();
         check_embedding_dim(&qvec)?;
-        Ok(self
+
+        // Pull a larger pool when reranking, so the reranker has candidates to reorder.
+        let pool = if self.reranker.is_some() {
+            limit.max(RERANK_POOL)
+        } else {
+            limit
+        };
+        let mut hits = self
             .store
-            .recall_memories(tenant_id, actor_id, &qvec, query, limit)
-            .await?)
+            .recall_memories(tenant_id, actor_id, &qvec, &retrieval_query, pool)
+            .await?;
+
+        if let Some(reranker) = &self.reranker {
+            // Rerank against the original query (relevance to what the user asked, not
+            // the expanded retrieval query). A None-content (encrypted) row is fed an
+            // empty string and so sorts low; accepted for now, since the reranker has
+            // no text to score it on.
+            let texts: Vec<String> = hits.iter().map(|h| h.content.clone().unwrap_or_default()).collect();
+            let scored: Vec<Scored> = reranker.rerank(query, &texts).await?;
+            let mut seen = std::collections::HashSet::new();
+            let mut reordered = Vec::with_capacity(hits.len());
+            for s in &scored {
+                if s.index < hits.len() && seen.insert(s.index) {
+                    reordered.push(hits[s.index].clone());
+                }
+            }
+            // Keep candidates the reranker omitted (a top-k reranker) after the
+            // reranked ones, in their original order, so reranking never shrinks the
+            // result below `limit`.
+            for (i, hit) in hits.iter().enumerate() {
+                if !seen.contains(&i) {
+                    reordered.push(hit.clone());
+                }
+            }
+            hits = reordered;
+        }
+
+        hits.truncate(limit.max(0) as usize);
+        Ok(hits)
     }
 
     /// Ingest raw text: extract candidate memories, embed them, then resolve and

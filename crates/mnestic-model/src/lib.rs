@@ -5,7 +5,7 @@
 
 pub mod mock;
 
-pub use mock::{MockEmbedder, MockExtractor, MockReranker};
+pub use mock::{MockEmbedder, MockExtractor, MockReranker, MockRewriter};
 
 #[cfg(any(feature = "openai", feature = "anthropic"))]
 mod extract_schema;

@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use mnestic_core::{
-    Candidate, Ctx, Embedder, Extractor, MemType, Reranker, Result, Scored, Temporal,
+    Candidate, Ctx, Embedder, Extractor, MemType, QueryRewriter, Reranker, Result, Scored, Temporal,
 };
 
 pub const MOCK_DIM: usize = 1536;
@@ -75,6 +75,16 @@ impl Reranker for MockReranker {
                 score: (n - i) as f32,
             })
             .collect())
+    }
+}
+
+/// Identity query rewriter: returns the query unchanged.
+pub struct MockRewriter;
+
+#[async_trait]
+impl QueryRewriter for MockRewriter {
+    async fn rewrite(&self, query: &str) -> Result<String> {
+        Ok(query.to_string())
     }
 }
 

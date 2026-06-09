@@ -24,7 +24,18 @@ pub trait Extractor: Send + Sync {
     async fn extract(&self, text: &str, ctx: &Ctx) -> Result<Vec<Candidate>>;
 }
 
+/// Reorders candidates by relevance to the query, returning `Scored` carrying each
+/// candidate's input `index`. May return a prefix (a top-k reranker); the caller is
+/// expected to keep any omitted candidates after the reranked ones.
 #[async_trait]
 pub trait Reranker: Send + Sync {
     async fn rerank(&self, query: &str, candidates: &[String]) -> Result<Vec<Scored>>;
+}
+
+/// Rewrites or expands a query before retrieval (e.g. "auth" -> "auth login oauth
+/// jwt"), to raise lexical and vector recall. Reranking still scores against the
+/// user's original query.
+#[async_trait]
+pub trait QueryRewriter: Send + Sync {
+    async fn rewrite(&self, query: &str) -> Result<String>;
 }
