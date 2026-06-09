@@ -1,28 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cloud-default OpenAI provider impls. Gated behind the `openai` feature so the
-//! default build (and tests) make no network calls. Traits keep a local backend
-//! a drop-in later.
-
-use std::time::Duration;
+//! Cloud OpenAI provider impls (embeddings + extraction). Gated behind the `openai`
+//! feature so the default build (and tests) make no network calls. Traits keep a
+//! local backend a drop-in later.
 
 use async_trait::async_trait;
-use mnestic_core::{
-    Candidate, Ctx, Embedder, Error, Extractor, MemType, Result, Temporal,
-};
+use mnestic_core::{Candidate, Ctx, Embedder, Error, Extractor, Result};
 use serde::Deserialize;
 
-const DEFAULT_BASE: &str = "https://api.openai.com/v1";
+use crate::extract_schema::{
+    ensure_success, http_client, into_candidate, Extraction, EXTRACT_SYSTEM_PROMPT,
+};
 
-// A request timeout matters because extraction/embedding run inside the engine's
-// open transaction; a hung connection would otherwise pin a pooled connection.
-// TODO(phase1): embedding batching and retry with backoff.
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .expect("reqwest client builds from a static config")
-}
+const DEFAULT_BASE: &str = "https://api.openai.com/v1";
 
 pub struct OpenAiEmbedder {
     client: reqwest::Client,
@@ -68,9 +58,8 @@ impl Embedder for OpenAiEmbedder {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Provider(e.to_string()))?
-            .error_for_status()
             .map_err(|e| Error::Provider(e.to_string()))?;
+        let resp = ensure_success(resp).await?;
         let parsed: EmbeddingResponse = resp
             .json()
             .await
@@ -102,40 +91,6 @@ impl OpenAiExtractor {
     }
 }
 
-/// Wire shape of one extracted memory (LLD §5.1). Deserialized from the model's
-/// JSON, then mapped onto the domain `Candidate`.
-#[derive(Deserialize)]
-struct RawMemory {
-    content: String,
-    #[serde(default)]
-    subject: Option<String>,
-    #[serde(default)]
-    attribute: Option<String>,
-    #[serde(default)]
-    value: Option<String>,
-    #[serde(default)]
-    single_valued: bool,
-    #[serde(default = "default_mem_type")]
-    mem_type: String,
-    #[serde(default = "default_confidence")]
-    confidence: f32,
-    #[serde(default)]
-    is_static: bool,
-}
-
-fn default_mem_type() -> String {
-    "fact".to_string()
-}
-
-fn default_confidence() -> f32 {
-    0.5
-}
-
-#[derive(Deserialize)]
-struct Extraction {
-    memories: Vec<RawMemory>,
-}
-
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
@@ -149,14 +104,6 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatMessage {
     content: String,
-}
-
-fn parse_mem_type(s: &str) -> MemType {
-    match s {
-        "preference" => MemType::Preference,
-        "episode" => MemType::Episode,
-        _ => MemType::Fact,
-    }
 }
 
 #[async_trait]
@@ -177,9 +124,8 @@ impl Extractor for OpenAiExtractor {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Provider(e.to_string()))?
-            .error_for_status()
             .map_err(|e| Error::Provider(e.to_string()))?;
+        let resp = ensure_success(resp).await?;
         let chat: ChatResponse = resp
             .json()
             .await
@@ -191,31 +137,8 @@ impl Extractor for OpenAiExtractor {
             .message
             .content
             .clone();
-        let extraction: Extraction = serde_json::from_str(&raw)
-            .map_err(|e| Error::Serde(e.to_string()))?;
+        let extraction: Extraction =
+            serde_json::from_str(&raw).map_err(|e| Error::Serde(e.to_string()))?;
         Ok(extraction.memories.into_iter().map(into_candidate).collect())
     }
 }
-
-fn into_candidate(m: RawMemory) -> Candidate {
-    Candidate {
-        content: m.content,
-        subject: m.subject,
-        attribute: m.attribute,
-        value: m.value,
-        single_valued: m.single_valued,
-        mem_type: parse_mem_type(&m.mem_type),
-        confidence: m.confidence,
-        is_static: m.is_static,
-        // Phase 1 wires temporal and forget extraction; the prompt does not ask for
-        // them yet, so the bitemporal columns stay at their defaults for now.
-        temporal: Temporal::None,
-        forget_after: None,
-    }
-}
-
-const EXTRACT_SYSTEM_PROMPT: &str = "Extract entity-centric memories from the user text. \
-Return only JSON: { \"memories\": [ { \"content\": string, \"subject\": string|null, \
-\"attribute\": string|null, \"value\": string|null, \"single_valued\": bool, \
-\"mem_type\": \"fact\"|\"preference\"|\"episode\", \"confidence\": number, \
-\"is_static\": bool } ] }.";

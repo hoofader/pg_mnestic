@@ -7,8 +7,17 @@ pub mod mock;
 
 pub use mock::{MockEmbedder, MockExtractor, MockReranker};
 
+#[cfg(any(feature = "openai", feature = "anthropic"))]
+mod extract_schema;
+
 #[cfg(feature = "openai")]
 pub mod openai;
 
 #[cfg(feature = "openai")]
 pub use openai::{OpenAiEmbedder, OpenAiExtractor};
+
+#[cfg(feature = "anthropic")]
+pub mod anthropic;
+
+#[cfg(feature = "anthropic")]
+pub use anthropic::AnthropicExtractor;

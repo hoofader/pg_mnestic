@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = []
 openai = ["dep:reqwest", "dep:serde_json"]
+anthropic = ["dep:reqwest", "dep:serde_json"]
 
 [dependencies]
 mnestic-core = { workspace = true }
