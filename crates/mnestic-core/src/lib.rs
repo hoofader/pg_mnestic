@@ -5,11 +5,13 @@
 //! isolation.
 
 pub mod error;
+pub mod ontology;
 pub mod resolve;
 pub mod traits;
 pub mod types;
 
 pub use error::{Error, Result};
+pub use ontology::{normalize_key, Ontology};
 pub use resolve::decide;
 pub use traits::{Ctx, Embedder, Extractor, Reranker};
 pub use types::{

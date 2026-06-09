@@ -222,7 +222,7 @@ A single LLM call converts raw text into candidate memories. The model returns o
 - `mem_type` ∈ `fact` | `preference` | `episode` (preferences strengthen with repetition; episodes decay unless significant).
 - `temporal.kind` ∈ `as_of` | `range` | `none`; drives how `valid_time` is set. `forget_after` handles ephemeral facts ("has an exam tomorrow").
 - The engine embeds `content` (or the rendered triple when present) for retrieval, and validates/repairs malformed JSON before proceeding.
-- **Attribute resolution (Phase 1):** before resolution, normalize `attribute` against a small per-tenant ontology and by embedding similarity, so "location", "current city", and "lives in" collapse to one key. This is where supersession quality actually comes from; without it, contradictions never trigger. The naive single-call extractor is the Phase 0 floor, not the parity design.
+- **Attribute resolution:** before resolution, the engine canonicalizes `subject`/`attribute` through `mnestic-core::ontology` (lexical normalization plus a synonym map), so "location", "current city", and "lives in" collapse to one stored key and contradictions trigger. The canonical key is what is stored, so resolution and storage agree. This is where supersession quality comes from. Embedding-based matching of novel attributes against existing keys, and value-level entity resolution ("SF" vs "San Francisco"), are later increments.
 
 ### 5.2 Resolution & supersession
 For each extracted candidate `c` (within the tenant transaction):

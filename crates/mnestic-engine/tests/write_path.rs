@@ -99,7 +99,7 @@ async fn count(pool: &PgPool, tenant: Uuid, predicate: &str) -> i64 {
     n
 }
 
-async fn latest_location(pool: &PgPool, tenant: Uuid) -> Option<String> {
+async fn latest_location(pool: &PgPool, tenant: Uuid, actor: &str) -> Option<String> {
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("SELECT set_config('mnestic.tenant_id', $1, true)")
         .bind(tenant.to_string())
@@ -108,9 +108,10 @@ async fn latest_location(pool: &PgPool, tenant: Uuid) -> Option<String> {
         .unwrap();
     let v: Option<String> = sqlx::query_scalar(
         "SELECT value FROM mnestic_memory \
-         WHERE subject = 'user' AND attribute = 'location' AND single_valued \
+         WHERE actor_id = $1 AND attribute = 'location' AND single_valued \
            AND is_latest AND status = 'active'",
     )
+    .bind(actor)
     .fetch_optional(&mut *tx)
     .await
     .unwrap()
@@ -182,6 +183,9 @@ async fn write_path_resolution_and_temporal_order() {
         vec![fact("user uses Rust", "tool", "Rust", false, None)],
         vec![fact("user uses Rust", "tool", "Rust", false, None)],
         vec![fact_range("user role is staff", "role", "staff", true, t2, t1)],
+        vec![fact("user lives in NYC", "lives in", "NYC", true, Some(t1))],
+        vec![fact("user current city is SF", "current city", "SF", true, Some(t2))],
+        vec![fact("just some noise", "?", "x", true, None)],
     ]);
 
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
@@ -193,13 +197,13 @@ async fn write_path_resolution_and_temporal_order() {
     // 1. First fact inserts cleanly.
     let r = engine.add(tenant, "user", &tags, "ignored", "conversation", None).await.unwrap();
     assert_eq!(r.inserted.len(), 1);
-    assert_eq!(latest_location(&app_pool, tenant).await.as_deref(), Some("NYC"));
+    assert_eq!(latest_location(&app_pool, tenant, "user").await.as_deref(), Some("NYC"));
 
     // 2. A newer contradicting fact supersedes the prior.
     let r = engine.add(tenant, "user", &tags, "ignored", "conversation", None).await.unwrap();
     assert_eq!(r.superseded.len(), 1, "NYC should be superseded");
     assert_eq!(r.inserted.len(), 1);
-    assert_eq!(latest_location(&app_pool, tenant).await.as_deref(), Some("SF"));
+    assert_eq!(latest_location(&app_pool, tenant, "user").await.as_deref(), Some("SF"));
     assert_eq!(
         count(&app_pool, tenant, "subject='user' AND attribute='location' AND is_latest AND status='active'").await,
         1
@@ -209,7 +213,7 @@ async fn write_path_resolution_and_temporal_order() {
     let r = engine.add(tenant, "user", &tags, "ignored", "conversation", None).await.unwrap();
     assert!(r.superseded.is_empty(), "a late, older fact must not supersede the current latest");
     assert_eq!(r.inserted.len(), 1);
-    assert_eq!(latest_location(&app_pool, tenant).await.as_deref(), Some("SF"));
+    assert_eq!(latest_location(&app_pool, tenant, "user").await.as_deref(), Some("SF"));
     assert_eq!(
         count(&app_pool, tenant, "subject='user' AND attribute='location'").await,
         3,
@@ -275,5 +279,30 @@ async fn write_path_resolution_and_temporal_order() {
         count(&app_pool, tenant, "attribute='role' AND upper_inf(valid_time)").await,
         1,
         "sanitized range is open-ended"
+    );
+
+    // 8. Attribute normalization: "lives in" then "current city" (different surface
+    // forms) collapse to the canonical "location" key, so the second supersedes the
+    // first. Uses actor user2 so it does not collide with user's location facts.
+    let r = engine.add(tenant, "user2", &tags, "ignored", "conversation", None).await.unwrap();
+    assert_eq!(r.inserted.len(), 1);
+    let r = engine.add(tenant, "user2", &tags, "ignored", "conversation", None).await.unwrap();
+    assert_eq!(r.superseded.len(), 1, "current city should supersede lives in via the canonical key");
+    assert_eq!(latest_location(&app_pool, tenant, "user2").await.as_deref(), Some("SF"));
+    assert_eq!(
+        count(&app_pool, tenant, "actor_id='user2' AND attribute IN ('lives in','current city')").await,
+        0,
+        "surface attributes are stored canonically, not verbatim"
+    );
+
+    // 9. An attribute that normalizes to empty (punctuation only) is stored as
+    // unstructured content with a NULL key, not an empty-string triple, and the
+    // single-valued flag is dropped so the write does not abort.
+    let r = engine.add(tenant, "user3", &tags, "ignored", "conversation", None).await.unwrap();
+    assert_eq!(r.inserted.len(), 1);
+    assert_eq!(
+        count(&app_pool, tenant, "actor_id='user3' AND attribute IS NULL AND NOT single_valued").await,
+        1,
+        "a punctuation-only attribute is dropped, not stored empty"
     );
 }

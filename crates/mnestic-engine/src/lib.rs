@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use mnestic_core::{decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, ResolveAction};
+use mnestic_core::{
+    decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, ResolveAction,
+};
 use mnestic_store::{NewMemoryFull, Store};
 use uuid::Uuid;
 
@@ -37,6 +39,7 @@ pub struct Engine {
     store: Store,
     embedder: Arc<dyn Embedder>,
     extractor: Arc<dyn Extractor>,
+    ontology: Ontology,
 }
 
 impl Engine {
@@ -45,7 +48,14 @@ impl Engine {
             store,
             embedder,
             extractor,
+            ontology: Ontology::starter(),
         }
+    }
+
+    /// Replace the attribute ontology (the synonym map used to canonicalize keys).
+    pub fn with_ontology(mut self, ontology: Ontology) -> Self {
+        self.ontology = ontology;
+        self
     }
 
     pub fn store(&self) -> &Store {
@@ -147,9 +157,27 @@ impl Engine {
         };
 
         for (cand, embedding) in req.candidates.iter().zip(req.embeddings) {
+            // Collapse subject/attribute surface forms to canonical keys, so variants
+            // like "lives in" and "current city" resolve against the same prior. A key
+            // that normalizes to empty (punctuation only) is dropped to None so it is
+            // not stored as an empty-string triple that would bypass the single-valued
+            // guard and collide with other empty keys.
+            let subject = cand
+                .subject
+                .as_deref()
+                .map(|s| self.ontology.normalize_subject(s))
+                .filter(|s| !s.is_empty());
+            let attribute = cand
+                .attribute
+                .as_deref()
+                .map(|a| self.ontology.canonical_attribute(a))
+                .filter(|a| !a.is_empty());
+            // A row is single-valued only when it actually has a structured key.
+            let single_valued = cand.single_valued && subject.is_some() && attribute.is_some();
+
             // Only structured facts can match a prior by key; unstructured content is
             // always inserted (semantic dedup is a later phase).
-            let matches = match (&cand.subject, &cand.attribute) {
+            let matches = match (&subject, &attribute) {
                 (Some(s), Some(a)) => {
                     Store::latest_matches_tx(&mut tx, req.tenant_id, req.actor_id, s, a).await?
                 }
@@ -162,6 +190,9 @@ impl Engine {
                 container_tags: req.container_tags,
                 source_id,
                 embedding,
+                subject,
+                attribute,
+                single_valued,
                 cand,
             };
 
@@ -225,7 +256,7 @@ async fn apply_supersede(
         // Cap the historical row at the start of the nearest later segment (active or
         // superseded), so it partitions the validity axis instead of overlapping an
         // existing interval. There is always at least the current latest's start.
-        let (subject, attribute) = match (&write.cand.subject, &write.cand.attribute) {
+        let (subject, attribute) = match (&write.subject, &write.attribute) {
             (Some(s), Some(a)) => (s.as_str(), a.as_str()),
             _ => return Ok(()),
         };
@@ -265,6 +296,12 @@ struct MemoryWrite<'a> {
     container_tags: &'a [String],
     source_id: Uuid,
     embedding: &'a [f32],
+    /// Canonicalized key (post-ontology), stored so resolution and storage agree.
+    subject: Option<String>,
+    attribute: Option<String>,
+    /// Gated on a present canonical key, so an empty/dropped key never stores a
+    /// single-valued row without a triple.
+    single_valued: bool,
     cand: &'a Candidate,
 }
 
@@ -292,10 +329,10 @@ impl MemoryWrite<'_> {
             actor_id: self.actor_id,
             container_tags: self.container_tags,
             content: &c.content,
-            subject: c.subject.as_deref(),
-            attribute: c.attribute.as_deref(),
+            subject: self.subject.as_deref(),
+            attribute: self.attribute.as_deref(),
             value: c.value.as_deref(),
-            single_valued: c.single_valued,
+            single_valued: self.single_valued,
             confidence: c.confidence,
             is_static: c.is_static,
             mem_type: mem_type_str(c.mem_type),
