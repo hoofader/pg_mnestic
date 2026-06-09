@@ -23,7 +23,14 @@ pub struct SubstringJudge;
 
 #[async_trait]
 impl Judge for SubstringJudge {
-    async fn judge(&self, _question: &str, gold: &str, predicted: &str) -> Result<bool> {
+    async fn judge(
+        &self,
+        _question: &str,
+        gold: &str,
+        predicted: &str,
+        _category: Option<&str>,
+        _abstention: bool,
+    ) -> Result<bool> {
         Ok(predicted.to_lowercase().contains(&gold.to_lowercase()))
     }
 }

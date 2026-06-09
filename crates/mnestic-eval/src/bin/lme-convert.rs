@@ -12,12 +12,12 @@ fn main() -> Result<()> {
         .nth(1)
         .context("usage: lme-convert <longmemeval.json> > dataset.json")?;
     let raw = std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
-    let (cases, skipped) = longmemeval::convert(&raw)?;
-    eprintln!(
-        "converted {} cases ({} abstention questions skipped)",
-        cases.len(),
-        skipped
-    );
+    let cases = longmemeval::convert(&raw)?;
+    let abstention = cases
+        .iter()
+        .filter(|c| c.questions.iter().any(|q| q.abstention))
+        .count();
+    eprintln!("converted {} cases ({} abstention)", cases.len(), abstention);
     println!("{}", serde_json::to_string_pretty(&cases)?);
     Ok(())
 }

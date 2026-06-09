@@ -82,6 +82,8 @@ async fn harness_ingests_recalls_answers_and_scores() {
         questions: vec![Qa {
             question: "Where does the user live?".to_string(),
             answer: "San Francisco".to_string(),
+            question_type: None,
+            abstention: false,
         }],
     }];
 

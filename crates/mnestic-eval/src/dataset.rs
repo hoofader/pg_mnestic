@@ -16,6 +16,14 @@ pub struct Turn {
 pub struct Qa {
     pub question: String,
     pub answer: String,
+    /// LongMemEval `question_type`, used to pick the per-type judge prompt. None for
+    /// datasets that do not carry it (the standard correctness judge is used).
+    #[serde(default)]
+    pub question_type: Option<String>,
+    /// True for LongMemEval abstention questions (question_id ends in `_abs`): the
+    /// judge checks whether the model correctly declined, not whether it matched gold.
+    #[serde(default)]
+    pub abstention: bool,
 }
 
 /// A dated conversation session. `date` is when it happened (event time); the runner
@@ -33,11 +41,13 @@ pub struct Session {
 /// produces it. The harness consumes the normalized form so the run loop stays
 /// independent of each benchmark's on-disk schema.
 ///
-/// Comparability caveats vs published LongMemEval numbers: the harness grades with a
-/// generic correctness judge, not LongMemEval's per-type judge prompts (temporal
+/// The harness replicates LongMemEval's per-type judge prompts (standard, temporal
 /// off-by-one tolerance, knowledge-update "accept the newer answer", preference
-/// rubric), and abstention questions are not scored. So treat the output as a
-/// Mnestic-internal MemScore, not an official LongMemEval score.
+/// rubric) and scores abstention questions with the unanswerable-question prompt, so
+/// the output tracks the published methodology and abstention is its own breakdown
+/// bucket. Two deviations remain: the judge model is Claude, not the gpt-4o used
+/// upstream, and recall recency ranks by ingest time (supersession orders by event
+/// time). Treat the MemScore as close-but-not-official.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Case {
     pub id: String,

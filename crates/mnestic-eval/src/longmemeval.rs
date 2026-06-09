@@ -3,9 +3,10 @@
 //! Convert LongMemEval (`longmemeval_s.json` / `_m` / `_oracle`) into Mnestic's
 //! normalized dataset. The file is a JSON array of instances; each carries a
 //! question plus a "haystack" of dated sessions. `haystack_dates` is parallel to
-//! `haystack_sessions`. Abstention instances (question_id ending `_abs`) are skipped
-//! because grading them needs a dedicated "did the model abstain" judge, not the
-//! generic correctness judge.
+//! `haystack_sessions`. Each question carries its `question_type` so the judge can
+//! apply LongMemEval's per-type prompt, and abstention instances (question_id ending
+//! `_abs`) are included and flagged so the judge applies the unanswerable-question
+//! prompt instead of matching gold.
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -26,6 +27,7 @@ struct LmeTurn {
 #[derive(Deserialize)]
 struct LmeInstance {
     question_id: String,
+    question_type: String,
     question: String,
     answer: String,
     #[serde(default)]
@@ -48,20 +50,15 @@ fn parse_date(s: &str) -> Result<DateTime<Utc>> {
     Ok(naive.and_utc())
 }
 
-/// Convert LongMemEval JSON into normalized cases. Returns the cases plus the number
-/// of abstention instances skipped, so the caller can report coverage honestly.
-pub fn convert(raw: &str) -> Result<(Vec<Case>, usize)> {
+/// Convert LongMemEval JSON into normalized cases. Abstention questions are included
+/// and flagged (`Qa::abstention`); each question carries its `question_type`.
+pub fn convert(raw: &str) -> Result<Vec<Case>> {
     let instances: Vec<LmeInstance> =
         serde_json::from_str(raw).context("parsing LongMemEval JSON")?;
 
-    let mut cases = Vec::new();
-    let mut skipped_abstention = 0usize;
-
+    let mut cases = Vec::with_capacity(instances.len());
     for inst in instances {
-        if inst.question_id.ends_with("_abs") {
-            skipped_abstention += 1;
-            continue;
-        }
+        let abstention = inst.question_id.ends_with("_abs");
         if inst.haystack_dates.len() != inst.haystack_sessions.len() {
             return Err(anyhow!(
                 "instance {}: haystack_dates ({}) and haystack_sessions ({}) lengths differ",
@@ -95,11 +92,13 @@ pub fn convert(raw: &str) -> Result<(Vec<Case>, usize)> {
             questions: vec![Qa {
                 question: inst.question,
                 answer: inst.answer,
+                question_type: Some(inst.question_type),
+                abstention,
             }],
         });
     }
 
-    Ok((cases, skipped_abstention))
+    Ok(cases)
 }
 
 #[cfg(test)]
@@ -120,9 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn converts_instance_and_skips_abstention() {
-        // Unknown fields (question_type, question_date, has_answer, answer_session_ids)
-        // are ignored, which is what a faithful converter wants.
+    fn converts_instance_and_flags_abstention() {
+        // Unknown fields (question_date, has_answer, answer_session_ids,
+        // haystack_session_ids) are ignored, which is what a faithful converter wants.
         let raw = r#"[
           {"question_id":"q1","question_type":"single-session-user","question":"Where do I live?",
            "answer":"San Francisco","question_date":"2023/05/30 (Tue) 23:40",
@@ -134,14 +133,20 @@ mod tests {
           {"question_id":"q2_abs","question_type":"single-session-user","question":"When did I move to NYC?",
            "answer":"never mentioned","haystack_dates":[],"haystack_sessions":[]}
         ]"#;
-        let (cases, skipped) = convert(raw).unwrap();
-        assert_eq!(skipped, 1, "abstention instance should be skipped");
-        assert_eq!(cases.len(), 1);
-        assert_eq!(cases[0].id, "q1");
-        assert_eq!(cases[0].sessions.len(), 1);
-        assert_eq!(cases[0].sessions[0].turns.len(), 2);
-        assert_eq!(cases[0].sessions[0].turns[0].content, "I live in San Francisco.");
-        assert!(cases[0].sessions[0].date.is_some());
-        assert_eq!(cases[0].questions[0].answer, "San Francisco");
+        let cases = convert(raw).unwrap();
+        assert_eq!(cases.len(), 2, "abstention instance is included, not skipped");
+
+        let q1 = &cases[0];
+        assert_eq!(q1.id, "q1");
+        assert_eq!(q1.questions[0].question_type.as_deref(), Some("single-session-user"));
+        assert!(!q1.questions[0].abstention);
+        assert_eq!(q1.sessions.len(), 1);
+        assert_eq!(q1.sessions[0].turns[0].content, "I live in San Francisco.");
+        assert!(q1.sessions[0].date.is_some());
+
+        let abs = &cases[1];
+        assert_eq!(abs.id, "q2_abs");
+        assert!(abs.questions[0].abstention, "_abs question must be flagged");
+        assert_eq!(abs.questions[0].question_type.as_deref(), Some("single-session-user"));
     }
 }

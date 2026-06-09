@@ -78,5 +78,8 @@ async fn main() -> Result<()> {
         "MemScore: n={} accuracy={:.3} avg_query_ms={:.1} avg_recalled_ctx_tokens~{:.0}",
         s.n, s.accuracy, s.avg_query_latency_ms, s.avg_recalled_context_tokens
     );
+    for t in &s.per_type {
+        println!("  {:<28} n={:<4} accuracy={:.3}", t.question_type, t.n, t.accuracy);
+    }
     Ok(())
 }

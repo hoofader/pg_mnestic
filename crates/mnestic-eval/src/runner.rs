@@ -14,10 +14,19 @@ pub trait Answerer: Send + Sync {
     async fn answer(&self, question: &str, context: &[String]) -> Result<String>;
 }
 
-/// Grades a predicted answer against the gold answer.
+/// Grades a predicted answer. `category` is the question type (for per-type judge
+/// prompts) and `abstention` flags an unanswerable question (the judge then checks
+/// whether the model correctly declined rather than matching `gold`).
 #[async_trait]
 pub trait Judge: Send + Sync {
-    async fn judge(&self, question: &str, gold: &str, predicted: &str) -> Result<bool>;
+    async fn judge(
+        &self,
+        question: &str,
+        gold: &str,
+        predicted: &str,
+        category: Option<&str>,
+        abstention: bool,
+    ) -> Result<bool>;
 }
 
 pub struct RunReport {
@@ -107,11 +116,21 @@ async fn score_question(
     let context: Vec<String> = hits.iter().filter_map(|h| h.content.clone()).collect();
     let recalled_context_tokens = approx_tokens(&context);
     let predicted = answerer.answer(&qa.question, &context).await?;
-    let correct = judge.judge(&qa.question, &qa.answer, &predicted).await?;
+    let correct = judge
+        .judge(
+            &qa.question,
+            &qa.answer,
+            &predicted,
+            qa.question_type.as_deref(),
+            qa.abstention,
+        )
+        .await?;
     Ok(QuestionResult {
         correct,
         query_latency_ms,
         recalled_context_tokens,
+        category: qa.question_type.clone(),
+        abstention: qa.abstention,
     })
 }
 
