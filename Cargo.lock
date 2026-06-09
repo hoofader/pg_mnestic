@@ -1360,6 +1360,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnestic-eval"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "mnestic-core",
+ "mnestic-engine",
+ "mnestic-model",
+ "mnestic-store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "mnestic-model"
 version = "0.0.0"
 dependencies = [

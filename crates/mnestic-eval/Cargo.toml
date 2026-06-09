@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "mnestic-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Real providers for the `memorybench` binary: OpenAI embeddings + Claude
+# extraction/answer/judge. The library and its tests run on mocks without this.
+real = ["dep:reqwest", "mnestic-model/anthropic", "mnestic-model/openai"]
+
+[dependencies]
+mnestic-core = { workspace = true }
+mnestic-engine = { workspace = true }
+mnestic-store = { workspace = true }
+mnestic-model = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+anyhow = "1"
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+testcontainers = "0.27"
+
+[[bin]]
+name = "memorybench"
+required-features = ["real"]

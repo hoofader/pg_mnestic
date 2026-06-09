@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use anyhow::Result;
+use async_trait::async_trait;
+use mnestic_engine::Engine;
+use uuid::Uuid;
+
+use crate::dataset::{Case, Qa};
+use crate::score::{MemScore, QuestionResult};
+
+/// Produces an answer to a question given the recalled memory context.
+#[async_trait]
+pub trait Answerer: Send + Sync {
+    async fn answer(&self, question: &str, context: &[String]) -> Result<String>;
+}
+
+/// Grades a predicted answer against the gold answer.
+#[async_trait]
+pub trait Judge: Send + Sync {
+    async fn judge(&self, question: &str, gold: &str, predicted: &str) -> Result<bool>;
+}
+
+pub struct RunReport {
+    pub results: Vec<QuestionResult>,
+    /// Per-case / per-question failures (a provider 4xx/5xx, a timeout). Captured so
+    /// one transient blip does not discard a long, paid run; these are NOT counted
+    /// in `score` (the operator decides whether to re-run the failed items).
+    pub errors: Vec<String>,
+    pub score: MemScore,
+}
+
+/// Ingest each case's sessions into memory, then answer its questions from recall
+/// and grade them. A failure ingesting a case skips that case's questions; a failure
+/// on a single question is recorded and the run continues. The returned report
+/// always reflects the work that succeeded, so a mid-run error never loses progress.
+pub async fn run_eval(
+    engine: &Engine,
+    tenant_id: Uuid,
+    answerer: &dyn Answerer,
+    judge: &dyn Judge,
+    recall_limit: i64,
+    cases: &[Case],
+) -> RunReport {
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+
+    for case in cases {
+        let actor = format!("case:{}", case.id);
+        if let Err(e) = ingest_case(engine, tenant_id, &actor, case).await {
+            errors.push(format!("case {}: ingest failed: {e:#}", case.id));
+            continue;
+        }
+        for qa in &case.questions {
+            match score_question(engine, tenant_id, &actor, recall_limit, answerer, judge, qa).await
+            {
+                Ok(result) => results.push(result),
+                Err(e) => errors.push(format!("case {} q {:?}: {e:#}", case.id, qa.question)),
+            }
+        }
+    }
+
+    let score = MemScore::from_results(&results);
+    RunReport {
+        results,
+        errors,
+        score,
+    }
+}
+
+async fn ingest_case(engine: &Engine, tenant_id: Uuid, actor: &str, case: &Case) -> Result<()> {
+    let tags: Vec<String> = Vec::new();
+    for session in &case.sessions {
+        for turn in session {
+            engine
+                .add(tenant_id, actor, &tags, &turn.content, "conversation", None)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn score_question(
+    engine: &Engine,
+    tenant_id: Uuid,
+    actor: &str,
+    recall_limit: i64,
+    answerer: &dyn Answerer,
+    judge: &dyn Judge,
+    qa: &Qa,
+) -> Result<QuestionResult> {
+    let start = std::time::Instant::now();
+    let hits = engine.recall(tenant_id, actor, &qa.question, recall_limit).await?;
+    let query_latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let context: Vec<String> = hits.iter().filter_map(|h| h.content.clone()).collect();
+    let recalled_context_tokens = approx_tokens(&context);
+    let predicted = answerer.answer(&qa.question, &context).await?;
+    let correct = judge.judge(&qa.question, &qa.answer, &predicted).await?;
+    Ok(QuestionResult {
+        correct,
+        query_latency_ms,
+        recalled_context_tokens,
+    })
+}
+
+/// Rough token estimate (~4 chars/token). Real token counts need the provider's
+/// counter; this is a stable proxy for the cost dimension across runs.
+fn approx_tokens(context: &[String]) -> usize {
+    context.iter().map(|c| c.chars().count()).sum::<usize>() / 4
+}

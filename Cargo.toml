@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "crates/mnestic-core",
     "crates/mnestic-engine",
+    "crates/mnestic-eval",
     "crates/mnestic-model",
     "crates/mnestic-store",
 ]
@@ -20,7 +21,7 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
