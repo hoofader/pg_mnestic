@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+[workspace]
+resolver = "2"
+members = [
+    "crates/mnestic-core",
+    "crates/mnestic-model",
+    "crates/mnestic-store",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/mdashti/pg_mnestic"
+
+[workspace.dependencies]
+async-trait = "0.1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "macros",
+    "migrate",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Internal crates referenced by path within the workspace.
+mnestic-core = { path = "crates/mnestic-core" }
+mnestic-model = { path = "crates/mnestic-model" }
+mnestic-store = { path = "crates/mnestic-store" }

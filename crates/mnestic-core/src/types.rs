@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemType {
+    Fact,
+    Preference,
+    Episode,
+}
+
+/// How a candidate's truth interval is expressed by extraction. Drives how
+/// `valid_time` is set on write (LLD §5.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Temporal {
+    AsOf {
+        timestamp: DateTime<Utc>,
+    },
+    Range {
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    },
+    None,
+}
+
+/// A memory proposed by extraction, before resolution against existing rows.
+/// Carries `temporal` and `forget_after`; the schema's `document_date`,
+/// `event_date`, and `forget_reason` are populated by the Phase 1 extractor, not yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Candidate {
+    pub content: String,
+    pub subject: Option<String>,
+    pub attribute: Option<String>,
+    pub value: Option<String>,
+    pub single_valued: bool,
+    pub mem_type: MemType,
+    pub confidence: f32,
+    pub is_static: bool,
+    pub temporal: Temporal,
+    pub forget_after: Option<DateTime<Utc>>,
+}
+
+/// A latest existing row matched during resolution, reduced to what `decide` needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingMatch {
+    pub id: String,
+    pub value: Option<String>,
+    pub single_valued: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveAction {
+    Dedup { id: String },
+    /// Every active single-valued prior with a different value must be closed, so
+    /// the set is returned rather than a single id.
+    Supersede { prior_ids: Vec<String> },
+    Insert,
+}
+
+/// A reranked candidate carrying its final score (LLD §5.4). `index` is the
+/// position in the input slice, so callers map a result back to its source row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scored {
+    pub index: usize,
+    pub content: String,
+    pub score: f32,
+}

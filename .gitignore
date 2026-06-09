@@ -1,0 +1,7 @@
+/target
+target/
+.DS_Store
+.env
+
+# oh-my-claudecode tooling state
+.omc/
