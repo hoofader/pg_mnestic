@@ -1344,6 +1344,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnestic-engine"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mnestic-core",
+ "mnestic-model",
+ "mnestic-store",
+ "sqlx",
+ "testcontainers",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "mnestic-model"
 version = "0.0.0"
 dependencies = [

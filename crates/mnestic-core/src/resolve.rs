@@ -58,6 +58,7 @@ mod tests {
             id: id.into(),
             value: Some(value.into()),
             single_valued,
+            valid_from: None,
         }
     }
 

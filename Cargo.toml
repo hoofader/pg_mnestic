@@ -3,6 +3,7 @@
 resolver = "2"
 members = [
     "crates/mnestic-core",
+    "crates/mnestic-engine",
     "crates/mnestic-model",
     "crates/mnestic-store",
 ]
@@ -34,5 +35,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # Internal crates referenced by path within the workspace.
 mnestic-core = { path = "crates/mnestic-core" }
+mnestic-engine = { path = "crates/mnestic-engine" }
 mnestic-model = { path = "crates/mnestic-model" }
 mnestic-store = { path = "crates/mnestic-store" }

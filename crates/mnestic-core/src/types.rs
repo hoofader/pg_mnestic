@@ -26,6 +26,26 @@ pub enum Temporal {
     None,
 }
 
+impl Temporal {
+    /// Lower bound of the truth interval, if extraction gave one. The engine
+    /// falls back to write time when this is None.
+    pub fn valid_from(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Temporal::AsOf { timestamp } => Some(*timestamp),
+            Temporal::Range { from, .. } => *from,
+            Temporal::None => None,
+        }
+    }
+
+    /// Upper bound of the truth interval, if bounded. None means open-ended.
+    pub fn valid_until(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Temporal::Range { to, .. } => *to,
+            _ => None,
+        }
+    }
+}
+
 /// A memory proposed by extraction, before resolution against existing rows.
 /// Carries `temporal` and `forget_after`; the schema's `document_date`,
 /// `event_date`, and `forget_reason` are populated by the Phase 1 extractor, not yet.
@@ -43,12 +63,14 @@ pub struct Candidate {
     pub forget_after: Option<DateTime<Utc>>,
 }
 
-/// A latest existing row matched during resolution, reduced to what `decide` needs.
+/// A latest existing row matched during resolution. `decide` reads `value` and
+/// `single_valued`; the engine uses `valid_from` to order supersession in time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingMatch {
     pub id: String,
     pub value: Option<String>,
     pub single_valued: bool,
+    pub valid_from: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

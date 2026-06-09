@@ -326,7 +326,8 @@ Pipeline around the SQL (Phase 1):
 ```
 mnestic/                      # workspace
 ├── crates/
-│   ├── mnestic-core/         # engine: ingest, extract, resolve, profile, recall
+│   ├── mnestic-core/         # domain types, provider traits, pure resolution (decide)
+│   ├── mnestic-engine/       # orchestration: add (ingest/extract/resolve), profile, recall
 │   ├── mnestic-store/        # Postgres access (sqlx), queries, migrations
 │   ├── mnestic-model/        # LLM + embedding + reranker provider traits + impls
 │   ├── mnestic-py/           # PyO3 bindings  -> `mnestic` wheel
