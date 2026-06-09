@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 mod error;
 pub use error::{Error, Result};
-pub use mnestic_store::RecallHit;
+pub use mnestic_store::{Profile, RecallHit};
 
 /// What `add` did with each extracted candidate.
 #[derive(Debug, Default, Clone)]
@@ -35,6 +35,12 @@ const DEDUP_CONFIDENCE_BUMP: f32 = 0.1;
 /// Bound on retries when a concurrent writer trips the single-valued EXCLUDE or a
 /// serialization failure. Each retry re-resolves against the now-current state.
 const MAX_CONFLICT_RETRIES: u32 = 3;
+
+/// A fact is "static" (durable profile material) when it is flagged static or its
+/// confidence clears this bar. Caps bound how much the profile holds.
+const STATIC_CONFIDENCE: f32 = 0.8;
+const STATIC_FACTS_CAP: i64 = 50;
+const DYNAMIC_CTX_CAP: i64 = 20;
 
 pub struct Engine {
     store: Store,
@@ -240,8 +246,26 @@ impl Engine {
             }
         }
 
+        // Refresh the actor's profile from the now-current memories, in the same
+        // transaction so the cached profile never lags a committed write.
+        Store::refresh_profile_tx(
+            &mut tx,
+            req.tenant_id,
+            req.actor_id,
+            STATIC_CONFIDENCE,
+            STATIC_FACTS_CAP,
+            DYNAMIC_CTX_CAP,
+        )
+        .await?;
+
         tx.commit().await?;
         Ok(result)
+    }
+
+    /// Read the actor's cached profile (durable facts plus recent context). Returns
+    /// an empty profile if the actor has no memories yet.
+    pub async fn profile(&self, tenant_id: Uuid, actor_id: &str) -> Result<Profile> {
+        Ok(self.store.get_profile(tenant_id, actor_id).await?.unwrap_or_default())
     }
 }
 

@@ -47,6 +47,14 @@ pub struct LatestRow {
     pub value: Option<String>,
 }
 
+/// An actor's precomputed profile: durable facts plus a recent-context window.
+#[derive(Debug, Clone, Default)]
+pub struct Profile {
+    pub static_facts: Vec<String>,
+    pub dynamic_ctx: Vec<String>,
+    pub refreshed_at: Option<DateTime<Utc>>,
+}
+
 /// One ranked memory returned by hybrid recall.
 #[derive(Debug, Clone)]
 pub struct RecallHit {
@@ -441,7 +449,81 @@ impl Store {
             })
             .collect())
     }
+
+    /// Recompute and upsert the actor's profile from current latest memories. A
+    /// bounded recompute (top static facts plus a recent window) run inside the write
+    /// transaction; an out-of-band debounced refresh is a scaling option.
+    pub async fn refresh_profile_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        actor_id: &str,
+        static_confidence: f32,
+        static_limit: i64,
+        dynamic_limit: i64,
+    ) -> Result<()> {
+        sqlx::query(PROFILE_REFRESH_SQL)
+            .bind(tenant_id)
+            .bind(actor_id)
+            .bind(static_confidence)
+            .bind(static_limit)
+            .bind(dynamic_limit)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Read the cached profile for an actor, if one has been built.
+    pub async fn get_profile(&self, tenant_id: Uuid, actor_id: &str) -> Result<Option<Profile>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let row = sqlx::query(
+            "SELECT array(SELECT jsonb_array_elements_text(static_facts)) AS s, \
+                    array(SELECT jsonb_array_elements_text(dynamic_ctx)) AS d, \
+                    refreshed_at \
+             FROM mnestic_profile WHERE tenant_id = $1 AND actor_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|r| Profile {
+            static_facts: r.get("s"),
+            dynamic_ctx: r.get("d"),
+            refreshed_at: Some(r.get("refreshed_at")),
+        }))
+    }
 }
+
+// Static facts are durable and high-confidence (is_static or confidence >= the
+// threshold) and never ephemeral; dynamic context is the most recent window
+// regardless of confidence. A structured row renders as \"attribute: value\", an
+// unstructured one as its content. jsonb_agg orders the array so the cached profile
+// is deterministic.
+const PROFILE_REFRESH_SQL: &str = "\
+INSERT INTO mnestic_profile (tenant_id, actor_id, static_facts, dynamic_ctx, refreshed_at) \
+SELECT $1, $2, \
+  COALESCE((SELECT jsonb_agg(txt ORDER BY conf DESC, rt DESC, id DESC) \
+              FILTER (WHERE txt IS NOT NULL) FROM ( \
+     SELECT CASE WHEN attribute IS NOT NULL \
+                 THEN attribute || COALESCE(': ' || value, '') ELSE content END AS txt, \
+            confidence AS conf, lower(recorded_time) AS rt, id \
+     FROM mnestic_memory \
+     WHERE tenant_id = $1 AND actor_id = $2 AND is_latest AND status = 'active' \
+       AND forget_after IS NULL AND (is_static OR confidence >= $3) \
+     ORDER BY confidence DESC, lower(recorded_time) DESC, id DESC LIMIT $4) s), '[]'::jsonb), \
+  COALESCE((SELECT jsonb_agg(txt ORDER BY rt DESC, id DESC) \
+              FILTER (WHERE txt IS NOT NULL) FROM ( \
+     SELECT CASE WHEN attribute IS NOT NULL \
+                 THEN attribute || COALESCE(': ' || value, '') ELSE content END AS txt, \
+            lower(recorded_time) AS rt, id \
+     FROM mnestic_memory \
+     WHERE tenant_id = $1 AND actor_id = $2 AND is_latest AND status = 'active' \
+       AND (forget_after IS NULL OR forget_after > now()) \
+     ORDER BY lower(recorded_time) DESC, id DESC LIMIT $5) d), '[]'::jsonb), \
+  now() \
+ON CONFLICT (tenant_id, actor_id) DO UPDATE \
+  SET static_facts = EXCLUDED.static_facts, dynamic_ctx = EXCLUDED.dynamic_ctx, \
+      refreshed_at = EXCLUDED.refreshed_at";
 
 // The filters live inside each signal's inner subquery, and each does
 // `ORDER BY <distance|rank> LIMIT k` so the HNSW and GIN indexes drive the top-k
