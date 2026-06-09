@@ -422,16 +422,27 @@ impl Store {
         actor_id: &str,
         query_embedding: &[f32],
         query_text: &str,
+        container_tags: &[String],
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
         let qvec = vec_literal(query_embedding);
         let mut tx = self.begin_tenant(tenant_id).await?;
+        // The container filter is a residual predicate on the HNSW top-k, so without
+        // iterative scan a selective filter could return fewer than `limit` in-scope
+        // rows while matching rows sit deeper in the index. relaxed_order keeps walking
+        // until enough match; final ranking re-sorts anyway, so the looser order is fine.
+        if !container_tags.is_empty() {
+            sqlx::query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+                .execute(&mut *tx)
+                .await?;
+        }
         let rows = sqlx::query(RECALL_SQL)
             .bind(tenant_id)
             .bind(qvec)
             .bind(query_text)
             .bind(actor_id)
             .bind(limit)
+            .bind(container_tags)
             .fetch_all(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -529,17 +540,20 @@ ON CONFLICT (tenant_id, actor_id) DO UPDATE \
 // `ORDER BY <distance|rank> LIMIT k` so the HNSW and GIN indexes drive the top-k
 // pull (a wrapping CTE or a window over the full set would force a scan plus sort).
 // Ranks are then assigned over just those k rows. Per-signal fan-out is at least the
-// caller's limit. Final ordering is fully determined by (score, recency, id), so
-// results are stable across calls. At large per-actor volumes the filtered HNSW scan
-// may need hnsw.ef_search or iterative-scan tuning. This is the tsvector floor; the
-// pg_search BM25 path swaps the lex subquery. It scopes by tenant and actor only;
-// a container_tags filter is a later increment.
+// caller's limit before filtering; a container filter shrinks it after the index walk,
+// which is why recall_memories turns on hnsw.iterative_scan when one is set. Final
+// ordering is fully determined by (score, recency, id), so results are stable across
+// calls. This is the tsvector floor; the pg_search BM25 path swaps the lex subquery. It
+// scopes by tenant and actor, plus an optional container_tags filter ($6, array
+// containment, all-of by design: any-of is a union of all-of at a higher layer). An
+// empty array imposes no filter.
 const RECALL_SQL: &str = "\
 WITH vec AS ( \
   SELECT id, row_number() OVER (ORDER BY dist) AS rnk FROM ( \
     SELECT id, embedding <=> $2::halfvec AS dist FROM mnestic_memory \
     WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
       AND (forget_after IS NULL OR forget_after > now()) AND embedding IS NOT NULL \
+      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
     ORDER BY embedding <=> $2::halfvec LIMIT greatest(50, $5) \
   ) t \
 ), \
@@ -550,6 +564,7 @@ lex AS ( \
     WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
       AND (forget_after IS NULL OR forget_after > now()) \
       AND content_tsv @@ plainto_tsquery('english', $3) \
+      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
     ORDER BY lr DESC LIMIT greatest(50, $5) \
   ) t \
 ), \

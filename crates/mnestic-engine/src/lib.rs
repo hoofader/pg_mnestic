@@ -96,18 +96,32 @@ impl Engine {
         &self.store
     }
 
-    /// Recall the actor's most relevant memories for a query. When a rewriter is set,
-    /// the query is expanded for retrieval (embedding + lexical). Hybrid retrieval
-    /// then pulls a candidate pool, and when a reranker is set the pool is reranked
-    /// against the user's original query before the top `limit` are returned.
-    ///
-    /// The signature is provisional: it scopes by actor only (no `container_tags`
-    /// filter yet), exposes no `search_mode`/`threshold`, and returns the store row
-    /// type. Container filtering and the document/chunk path are later increments.
+    /// Recall the actor's most relevant memories for a query, across all containers.
+    /// Thin wrapper over `recall_scoped` for the common unfiltered case.
     pub async fn recall(
         &self,
         tenant_id: Uuid,
         actor_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<RecallHit>> {
+        self.recall_scoped(tenant_id, actor_id, &[], query, limit).await
+    }
+
+    /// Recall the actor's most relevant memories for a query, restricted to memories
+    /// carrying all of `container_tags` (an empty slice imposes no filter). When a
+    /// rewriter is set, the query is expanded for retrieval (embedding + lexical).
+    /// Hybrid retrieval then pulls a candidate pool, and when a reranker is set the
+    /// pool is reranked against the user's original query before the top `limit` are
+    /// returned.
+    ///
+    /// The signature is provisional: it exposes no `search_mode`/`threshold` and
+    /// returns the store row type. The document/chunk path is a later increment.
+    pub async fn recall_scoped(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
         query: &str,
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
@@ -128,7 +142,7 @@ impl Engine {
         };
         let mut hits = self
             .store
-            .recall_memories(tenant_id, actor_id, &qvec, &retrieval_query, pool)
+            .recall_memories(tenant_id, actor_id, &qvec, &retrieval_query, container_tags, pool)
             .await?;
 
         if let Some(reranker) = &self.reranker {

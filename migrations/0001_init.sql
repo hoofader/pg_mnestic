@@ -131,6 +131,9 @@ CREATE INDEX ON mnestic_memory USING gin (content_tsv);
 CREATE INDEX ON mnestic_memory (tenant_id, actor_id) WHERE is_latest AND status = 'active';
 CREATE INDEX ON mnestic_memory (forget_after) WHERE status = 'active' AND forget_after IS NOT NULL;
 CREATE INDEX ON mnestic_memory (tenant_id, actor_id, subject, attribute) WHERE single_valued AND is_latest;
+-- Container scoping on the recall path is `container_tags @> $tags`. GIN stores nothing for
+-- the common empty-array row, so this is near-free until containers are actually used.
+CREATE INDEX ON mnestic_memory USING gin (container_tags) WHERE is_latest AND status = 'active';
 
 -- Keep memory.content_tsv populated so the §5.4 lexical CTE never silently returns zero
 -- rows. The engine may render a richer form (subject attribute: value) and set content_tsv
