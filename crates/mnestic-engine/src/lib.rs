@@ -18,6 +18,14 @@ mod error;
 pub use error::{Error, Result};
 pub use mnestic_store::{Profile, RecallHit};
 
+/// An actor's durable profile plus the memories most relevant to a query. Backs the
+/// supermemory `/v4/profile` shape (profile, optionally with query-scoped results).
+#[derive(Debug, Default, Clone)]
+pub struct ProfileContext {
+    pub profile: Profile,
+    pub relevant: Vec<RecallHit>,
+}
+
 /// What `add` did with each extracted candidate.
 #[derive(Debug, Default, Clone)]
 pub struct AddResult {
@@ -373,6 +381,29 @@ impl Engine {
     /// an empty profile if the actor has no memories yet.
     pub async fn profile(&self, tenant_id: Uuid, actor_id: &str) -> Result<Profile> {
         Ok(self.store.get_profile(tenant_id, actor_id).await?.unwrap_or_default())
+    }
+
+    /// The actor's profile plus the memories most relevant to `query`. A blank query
+    /// returns just the profile (no recall), matching the optional `q` on the
+    /// supermemory profile call. `container_tags` and `limit` bound only `relevant`,
+    /// not the per-actor `profile`. The recall runs the full pipeline (rewrite, rerank)
+    /// when configured; it has no `threshold`/`filters` yet, so a Phase 2 `/v4/profile`
+    /// adapter cannot honor those client params.
+    pub async fn profile_query(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
+        query: &str,
+        limit: i64,
+    ) -> Result<ProfileContext> {
+        let profile = self.profile(tenant_id, actor_id).await?;
+        let relevant = if query.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit).await?
+        };
+        Ok(ProfileContext { profile, relevant })
     }
 
     /// Forget the memories an earlier `add` produced under `custom_id`, tombstoning
