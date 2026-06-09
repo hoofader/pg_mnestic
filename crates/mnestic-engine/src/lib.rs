@@ -374,6 +374,41 @@ impl Engine {
     pub async fn profile(&self, tenant_id: Uuid, actor_id: &str) -> Result<Profile> {
         Ok(self.store.get_profile(tenant_id, actor_id).await?.unwrap_or_default())
     }
+
+    /// Forget the memories an earlier `add` produced under `custom_id`, tombstoning
+    /// them so recall and the profile stop returning them. Returns the forgotten ids;
+    /// empty when nothing matched (an unknown or already-forgotten `custom_id`, or a
+    /// `custom_id` owned by a different actor), so it is idempotent and a caller may
+    /// safely re-issue it on a transient conflict (it is not retried internally). The
+    /// profile refresh shares the tombstone transaction, so the cached profile never
+    /// lags a committed forget.
+    ///
+    /// `custom_id` stays an idempotency key on the source, so re-`add`ing the same
+    /// `custom_id` after a forget is a no-op; re-ingest under a fresh `custom_id`.
+    pub async fn forget(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        custom_id: &str,
+        reason: Option<&str>,
+    ) -> Result<Vec<Uuid>> {
+        let mut tx = self.store.begin_tenant(tenant_id).await?;
+        let ids =
+            Store::forget_source_memories_tx(&mut tx, tenant_id, actor_id, custom_id, reason).await?;
+        if !ids.is_empty() {
+            Store::refresh_profile_tx(
+                &mut tx,
+                tenant_id,
+                actor_id,
+                STATIC_CONFIDENCE,
+                STATIC_FACTS_CAP,
+                DYNAMIC_CTX_CAP,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(ids)
+    }
 }
 
 /// Apply a single-valued contradiction in event-time order (LLD §5.2). A candidate

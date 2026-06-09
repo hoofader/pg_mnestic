@@ -411,6 +411,43 @@ impl Store {
         Ok(())
     }
 
+    /// Tombstone the active memories an earlier `add` produced under `custom_id`, for
+    /// this actor, inside the caller's tx; returns the forgotten ids. Only system time
+    /// (`recorded_time`) is closed; `valid_time` is left intact, since forgetting is a
+    /// belief change, not a claim that the fact was never valid. Superseded priors stay
+    /// history (forgetting the newer fact does not resurrect the one it replaced), and
+    /// the kept `valid_time` still partitions the axis, so a later out-of-order insert
+    /// for the same attribute is placed around the forgotten interval, not over it.
+    /// The CASE on `recorded_time` closes the system-time range only when that yields a
+    /// non-empty interval, so a backward clock never collapses it to empty.
+    pub async fn forget_source_memories_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        actor_id: &str,
+        custom_id: &str,
+        reason: Option<&str>,
+    ) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar::<_, Uuid>(
+            "UPDATE mnestic_memory m SET status = 'forgotten', is_latest = false, \
+                    forget_reason = $4, \
+                    recorded_time = CASE WHEN now() > lower(recorded_time) \
+                                         THEN tstzrange(lower(recorded_time), now()) \
+                                         ELSE recorded_time END \
+             FROM mnestic_source s \
+             WHERE m.source_id = s.id AND s.custom_id = $3 \
+               AND m.tenant_id = $1 AND s.tenant_id = $1 \
+               AND m.actor_id = $2 AND m.status = 'active' \
+             RETURNING m.id",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(custom_id)
+        .bind(reason)
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(ids)
+    }
+
     /// Hybrid recall over the actor's latest active memories: vector similarity and
     /// lexical (tsvector) relevance fused with reciprocal-rank fusion, then weighted
     /// by recency decay and confidence (LLD §5.4). Superseded, non-latest, and
