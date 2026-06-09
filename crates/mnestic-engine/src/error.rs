@@ -12,6 +12,8 @@ pub enum Error {
     BadId(String),
     #[error("embedder returned {got} vectors for {expected} candidates")]
     EmbeddingCountMismatch { expected: usize, got: usize },
+    #[error("embedding has {got} dimensions, expected {expected}")]
+    EmbeddingDim { expected: usize, got: usize },
     #[error("expected to close exactly one prior on supersession, closed {0}")]
     SupersedeFailed(u64),
     #[error("write kept conflicting after {0} attempts")]

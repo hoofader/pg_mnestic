@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 mod error;
 pub use error::{Error, Result};
+pub use mnestic_store::RecallHit;
 
 /// What `add` did with each extracted candidate.
 #[derive(Debug, Default, Clone)]
@@ -60,6 +61,30 @@ impl Engine {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// Recall the actor's most relevant memories for a query: embed the query, then
+    /// run hybrid (vector + lexical) retrieval ranked by recency and confidence.
+    ///
+    /// The signature is provisional: it scopes by actor only (no `container_tags`
+    /// filter yet, unlike the supermemory `containerTag` model), exposes no
+    /// `search_mode`/`threshold`/`rerank`, and returns the store row type. Container
+    /// filtering, cross-encoder reranking, and the document/chunk path are later
+    /// increments.
+    pub async fn recall(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<RecallHit>> {
+        let mut embeddings = self.embedder.embed(&[query.to_string()]).await?;
+        let qvec = embeddings.pop().unwrap_or_default();
+        check_embedding_dim(&qvec)?;
+        Ok(self
+            .store
+            .recall_memories(tenant_id, actor_id, &qvec, query, limit)
+            .await?)
     }
 
     /// Ingest raw text: extract candidate memories, embed them, then resolve and
@@ -157,6 +182,8 @@ impl Engine {
         };
 
         for (cand, embedding) in req.candidates.iter().zip(req.embeddings) {
+            check_embedding_dim(embedding)?;
+
             // Collapse subject/attribute surface forms to canonical keys, so variants
             // like "lives in" and "current city" resolve against the same prior. A key
             // that normalizes to empty (punctuation only) is dropped to None so it is
@@ -358,4 +385,16 @@ fn mem_type_str(t: MemType) -> &'static str {
 
 fn parse_id(s: &str) -> Result<Uuid> {
     Uuid::parse_str(s).map_err(|_| Error::BadId(s.to_string()))
+}
+
+/// Reject an empty or wrong-dimension embedding before it reaches a `::halfvec`
+/// cast, where it would otherwise surface as an opaque database error.
+fn check_embedding_dim(v: &[f32]) -> Result<()> {
+    if v.len() != mnestic_store::EMBEDDING_DIM {
+        return Err(Error::EmbeddingDim {
+            expected: mnestic_store::EMBEDDING_DIM,
+            got: v.len(),
+        });
+    }
+    Ok(())
 }

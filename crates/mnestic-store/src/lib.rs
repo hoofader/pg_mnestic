@@ -11,6 +11,12 @@ use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, sqlx::Error>;
 
+/// Embedding dimension the schema's `halfvec` columns are built for. The single
+/// client-side source of truth pending the templated-dimension work; callers
+/// validate against it before binding a vector, so a wrong-dim model fails with a
+/// clear error rather than an opaque cast error deep in a query.
+pub const EMBEDDING_DIM: usize = 1536;
+
 // Path is relative to CARGO_MANIFEST_DIR (this crate), so up two levels to the
 // workspace `migrations/` dir.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
@@ -39,6 +45,19 @@ pub struct NewMemory<'a> {
 pub struct LatestRow {
     pub id: Uuid,
     pub value: Option<String>,
+}
+
+/// One ranked memory returned by hybrid recall.
+#[derive(Debug, Clone)]
+pub struct RecallHit {
+    pub id: Uuid,
+    pub content: Option<String>,
+    pub subject: Option<String>,
+    pub attribute: Option<String>,
+    pub value: Option<String>,
+    pub confidence: f32,
+    pub recorded_at: Option<DateTime<Utc>>,
+    pub score: f64,
 }
 
 /// A fully specified memory row for the engine's write path. Unlike `NewMemory`,
@@ -383,7 +402,88 @@ impl Store {
         .await?;
         Ok(())
     }
+
+    /// Hybrid recall over the actor's latest active memories: vector similarity and
+    /// lexical (tsvector) relevance fused with reciprocal-rank fusion, then weighted
+    /// by recency decay and confidence (LLD §5.4). Superseded, non-latest, and
+    /// time-expired rows are excluded. This uses the tsvector floor; the pg_search
+    /// BM25 path swaps the lexical CTE where the extension is available.
+    pub async fn recall_memories(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        query_embedding: &[f32],
+        query_text: &str,
+        limit: i64,
+    ) -> Result<Vec<RecallHit>> {
+        let qvec = vec_literal(query_embedding);
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let rows = sqlx::query(RECALL_SQL)
+            .bind(tenant_id)
+            .bind(qvec)
+            .bind(query_text)
+            .bind(actor_id)
+            .bind(limit)
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RecallHit {
+                id: r.get("id"),
+                content: r.get("content"),
+                subject: r.get("subject"),
+                attribute: r.get("attribute"),
+                value: r.get("value"),
+                confidence: r.get("confidence"),
+                recorded_at: r.get("recorded_at"),
+                score: r.get("score"),
+            })
+            .collect())
+    }
 }
+
+// The filters live inside each signal's inner subquery, and each does
+// `ORDER BY <distance|rank> LIMIT k` so the HNSW and GIN indexes drive the top-k
+// pull (a wrapping CTE or a window over the full set would force a scan plus sort).
+// Ranks are then assigned over just those k rows. Per-signal fan-out is at least the
+// caller's limit. Final ordering is fully determined by (score, recency, id), so
+// results are stable across calls. At large per-actor volumes the filtered HNSW scan
+// may need hnsw.ef_search or iterative-scan tuning. This is the tsvector floor; the
+// pg_search BM25 path swaps the lex subquery. It scopes by tenant and actor only;
+// a container_tags filter is a later increment.
+const RECALL_SQL: &str = "\
+WITH vec AS ( \
+  SELECT id, row_number() OVER (ORDER BY dist) AS rnk FROM ( \
+    SELECT id, embedding <=> $2::halfvec AS dist FROM mnestic_memory \
+    WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
+      AND (forget_after IS NULL OR forget_after > now()) AND embedding IS NOT NULL \
+    ORDER BY embedding <=> $2::halfvec LIMIT greatest(50, $5) \
+  ) t \
+), \
+lex AS ( \
+  SELECT id, row_number() OVER (ORDER BY lr DESC) AS rnk FROM ( \
+    SELECT id, ts_rank(content_tsv, plainto_tsquery('english', $3)) AS lr \
+    FROM mnestic_memory \
+    WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
+      AND (forget_after IS NULL OR forget_after > now()) \
+      AND content_tsv @@ plainto_tsquery('english', $3) \
+    ORDER BY lr DESC LIMIT greatest(50, $5) \
+  ) t \
+), \
+fused AS ( \
+  SELECT id, SUM(1.0 / (60 + rnk)) AS rrf \
+  FROM (SELECT id, rnk FROM vec UNION ALL SELECT id, rnk FROM lex) u \
+  GROUP BY id \
+) \
+SELECT m.id, m.content, m.subject, m.attribute, m.value, m.confidence, \
+       lower(m.recorded_time) AS recorded_at, \
+       (f.rrf \
+        * exp(-extract(epoch FROM (now() - lower(m.recorded_time))) / 2592000.0) \
+        * (0.5 + 0.5 * m.confidence))::float8 AS score \
+FROM fused f JOIN mnestic_memory m ON m.id = f.id \
+ORDER BY score DESC, recorded_at DESC NULLS LAST, m.id \
+LIMIT $5";
 
 /// Render an embedding as a pgvector text literal (`[a,b,c]`) for a `::halfvec`
 /// cast, so the write path needs no dedicated vector-binding dependency.
