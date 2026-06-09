@@ -3,35 +3,46 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Turn {
     pub role: String,
     pub content: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Qa {
     pub question: String,
     pub answer: String,
 }
 
-/// One benchmark item: prior conversation sessions to ingest, then questions to
-/// answer from memory. This is Mnestic's normalized shape. Adapters that convert
-/// LongMemEval-S and LoCoMo into this shape are a follow-up; the harness consumes
-/// the normalized form so the run loop stays independent of each benchmark's schema.
+/// A dated conversation session. `date` is when it happened (event time); the runner
+/// passes it as the default `valid_from` so supersession and as-of queries order by
+/// event time rather than ingest time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    #[serde(default)]
+    pub date: Option<DateTime<Utc>>,
+    pub turns: Vec<Turn>,
+}
+
+/// One benchmark item: prior dated sessions to ingest, then questions to answer from
+/// memory. Mnestic's normalized shape; the LongMemEval converter (`longmemeval`)
+/// produces it. The harness consumes the normalized form so the run loop stays
+/// independent of each benchmark's on-disk schema.
 ///
-/// Limitation: turns carry no timestamp, and ingest defaults each memory's
-/// `valid_from` to write time. So temporal-reasoning question types (LongMemEval's
-/// "when did X" / multi-session ordering) cannot be scored faithfully yet. Threading
-/// per-session timestamps into `valid_time` is the prerequisite, and until then these
-/// numbers are not directly comparable to published LongMemEval accuracy.
-#[derive(Debug, Clone, Deserialize)]
+/// Comparability caveats vs published LongMemEval numbers: the harness grades with a
+/// generic correctness judge, not LongMemEval's per-type judge prompts (temporal
+/// off-by-one tolerance, knowledge-update "accept the newer answer", preference
+/// rubric), and abstention questions are not scored. So treat the output as a
+/// Mnestic-internal MemScore, not an official LongMemEval score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Case {
     pub id: String,
     #[serde(default)]
-    pub sessions: Vec<Vec<Turn>>,
+    pub sessions: Vec<Session>,
     pub questions: Vec<Qa>,
 }
 

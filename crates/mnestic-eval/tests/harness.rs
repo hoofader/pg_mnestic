@@ -7,8 +7,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use mnestic_core::{Embedder, Extractor};
 use mnestic_engine::Engine;
+use mnestic_eval::dataset::Session;
 use mnestic_eval::mock::{EchoAnswerer, SubstringJudge};
 use mnestic_eval::{run_eval, Case, Qa, Turn};
 use mnestic_model::{MockEmbedder, MockExtractor};
@@ -65,14 +67,18 @@ async fn harness_ingests_recalls_answers_and_scores() {
 
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
-    let engine = Engine::new(Store::new(pool), embedder, extractor);
+    let engine = Engine::new(Store::new(pool.clone()), embedder, extractor);
 
+    let session_date: DateTime<Utc> = "2024-01-02T03:04:05Z".parse().unwrap();
     let cases = vec![Case {
         id: "c1".to_string(),
-        sessions: vec![vec![Turn {
-            role: "user".to_string(),
-            content: "The user lives in San Francisco.".to_string(),
-        }]],
+        sessions: vec![Session {
+            date: Some(session_date),
+            turns: vec![Turn {
+                role: "user".to_string(),
+                content: "The user lives in San Francisco.".to_string(),
+            }],
+        }],
         questions: vec![Qa {
             question: "Where does the user live?".to_string(),
             answer: "San Francisco".to_string(),
@@ -88,4 +94,21 @@ async fn harness_ingests_recalls_answers_and_scores() {
         "the SF memory should be recalled and graded correct"
     );
     assert!((report.score.accuracy - 1.0).abs() < 1e-9);
+
+    // The session date flowed through add_at into the memory's valid_from, so a fact
+    // is dated when it was said, not when it was ingested.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_config('mnestic.tenant_id', $1, true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let valid_from: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT lower(valid_time) FROM mnestic_memory WHERE actor_id = 'case:c1' LIMIT 1",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(valid_from, Some(session_date), "valid_from should be the session date");
 }

@@ -9,6 +9,7 @@
 //! Claude-backed providers and the `memorybench` binary.
 
 pub mod dataset;
+pub mod longmemeval;
 pub mod mock;
 pub mod runner;
 pub mod score;

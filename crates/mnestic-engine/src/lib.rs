@@ -109,6 +109,30 @@ impl Engine {
         kind: &str,
         custom_id: Option<&str>,
     ) -> Result<AddResult> {
+        self.add_at(tenant_id, actor_id, container_tags, content, kind, custom_id, None)
+            .await
+    }
+
+    /// Like `add`, but `as_of` sets the default `valid_from` for extracted facts
+    /// whose extraction did not pin a time. Use it to ingest dated history (a
+    /// benchmark session timestamp, a backfilled log) so supersession and as-of
+    /// queries order by event time rather than ingest time.
+    ///
+    /// Precedence is extraction-time, then `as_of`, then write time. Today the
+    /// extractors always emit `Temporal::None`, so `as_of` wins; once temporal
+    /// extraction lands, revisit whether a trusted `as_of` should override a
+    /// model-guessed time for callers that pass a known-good timestamp.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_at(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
+        content: &str,
+        kind: &str,
+        custom_id: Option<&str>,
+        as_of: Option<DateTime<Utc>>,
+    ) -> Result<AddResult> {
         let ctx = Ctx {
             actor_id: actor_id.to_string(),
             container_tags: container_tags.to_vec(),
@@ -134,6 +158,7 @@ impl Engine {
             content,
             kind,
             custom_id,
+            as_of,
             candidates: &candidates,
             embeddings: &embeddings,
         };
@@ -226,6 +251,7 @@ impl Engine {
                 subject,
                 attribute,
                 single_valued,
+                as_of: req.as_of,
                 cand,
             };
 
@@ -336,6 +362,7 @@ struct WriteRequest<'a> {
     content: &'a str,
     kind: &'a str,
     custom_id: Option<&'a str>,
+    as_of: Option<DateTime<Utc>>,
     candidates: &'a [Candidate],
     embeddings: &'a [Vec<f32>],
 }
@@ -353,15 +380,23 @@ struct MemoryWrite<'a> {
     /// Gated on a present canonical key, so an empty/dropped key never stores a
     /// single-valued row without a triple.
     single_valued: bool,
+    /// Default validity start when extraction pinned none (e.g. a dated session).
+    as_of: Option<DateTime<Utc>>,
     cand: &'a Candidate,
 }
 
 impl MemoryWrite<'_> {
     /// The candidate's validity interval, sanitized: an upper bound at or before the
     /// lower bound (a garbled extractor range) is dropped to open-ended, so the
-    /// `tstzrange` is never inverted or empty.
+    /// `tstzrange` is never inverted or empty. `valid_from` is the extracted time, or
+    /// the caller's `as_of`, or write time, in that order of preference.
     fn interval(&self) -> (DateTime<Utc>, Option<DateTime<Utc>>) {
-        let from = self.cand.temporal.valid_from().unwrap_or_else(Utc::now);
+        let from = self
+            .cand
+            .temporal
+            .valid_from()
+            .or(self.as_of)
+            .unwrap_or_else(Utc::now);
         let until = self.cand.temporal.valid_until().filter(|u| *u > from);
         (from, until)
     }

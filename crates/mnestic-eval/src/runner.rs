@@ -70,11 +70,23 @@ pub async fn run_eval(
 async fn ingest_case(engine: &Engine, tenant_id: Uuid, actor: &str, case: &Case) -> Result<()> {
     let tags: Vec<String> = Vec::new();
     for session in &case.sessions {
-        for turn in session {
-            engine
-                .add(tenant_id, actor, &tags, &turn.content, "conversation", None)
-                .await?;
+        // Ingest the whole session in one extraction call, not turn-by-turn: it gives
+        // the extractor the dialogue context (evidence often spans a user+assistant
+        // pair) and avoids one Opus call per turn on a large haystack. The session
+        // date flows in as `as_of`, so a fact's valid_from is when it was said. This
+        // drives supersession event-ordering; recall recency still uses ingest time.
+        let text = session
+            .turns
+            .iter()
+            .map(|t| format!("{}: {}", t.role, t.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            continue;
         }
+        engine
+            .add_at(tenant_id, actor, &tags, &text, "conversation", None, session.date)
+            .await?;
     }
     Ok(())
 }
