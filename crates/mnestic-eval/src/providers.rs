@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Claude-backed answerer and judge for real benchmark runs. Raw HTTP against the
-//! Messages API (no official Rust SDK). Opus 4.8 by default; no `temperature` or
-//! `budget_tokens` (rejected on 4.8).
+//! Claude-backed providers for real benchmark runs: the answerer and judge that
+//! score a run, plus the recall-quality rewriter and reranker the engine calls
+//! during retrieval. Raw HTTP against the Messages API (no official Rust SDK).
+//! Opus 4.8 by default; no `temperature` or `budget_tokens` (rejected on 4.8).
 
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use mnestic_core::{Error as CoreError, QueryRewriter, Reranker, Result as CoreResult, Scored};
 use serde_json::Value;
 
 use crate::runner::{Answerer, Judge};
@@ -213,4 +215,173 @@ fn judge_prompt(category: Option<&str>, abstention: bool, question: &str, gold: 
         "{intro}\n\nQuestion: {question}\n\nCorrect Answer: {gold}\n\nModel Response: {predicted}\n\n\
          Is the model response correct? Answer yes or no only."
     )
+}
+
+/// Expands a question into a retrieval query before recall, to widen lexical and
+/// vector matching. The engine reranks the retrieved pool against the original
+/// question, so expansion costs in-pool ordering (which rerank repairs), not the
+/// final order. Its net effect on recall is what MEMORYBENCH_REWRITE measures.
+pub struct AnthropicRewriter {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+}
+
+impl AnthropicRewriter {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            client: http_client(),
+            api_key: api_key.into(),
+            model: DEFAULT_MODEL.to_string(),
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+}
+
+#[async_trait]
+impl QueryRewriter for AnthropicRewriter {
+    async fn rewrite(&self, query: &str) -> CoreResult<String> {
+        let system = "Rewrite the user's question into a search query for a personal \
+                      memory store. Keep the original words, and add the concrete entities, \
+                      dates, and synonyms it implies so keyword and vector search match more \
+                      rows. Return only the rewritten query, with no preamble or quotes.";
+        let expanded = complete(&self.client, &self.api_key, &self.model, system, query, 256, None)
+            .await
+            .map_err(|e| CoreError::Provider(e.to_string()))?;
+        let expanded = expanded.trim();
+        // A blank completion would erase the query and tank recall; a 4xx/timeout
+        // already propagated above. Degrade to the original rather than search on "".
+        if expanded.is_empty() {
+            return Ok(query.to_string());
+        }
+        Ok(expanded.to_string())
+    }
+}
+
+/// LLM-as-reranker: scores the candidate pool against the original question and
+/// returns the candidates in relevance order. A top-k or partial ranking is fine;
+/// the engine keeps any indices this omits, after the ranked ones.
+pub struct AnthropicReranker {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+}
+
+impl AnthropicReranker {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            client: http_client(),
+            api_key: api_key.into(),
+            model: DEFAULT_MODEL.to_string(),
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Ranking {
+    ranking: Vec<i64>,
+}
+
+/// Constrain the reranker output to a list of candidate indices, so parsing the
+/// response cannot fail on prose or a wrapped explanation.
+fn ranking_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "ranking": { "type": "array", "items": { "type": "integer" } }
+        },
+        "required": ["ranking"]
+    })
+}
+
+/// Map the model's index ranking onto `Scored`, dropping out-of-range or repeated
+/// indices. Score descends with rank, so a score-sorting consumer keeps the model's
+/// order (today the engine orders by sequence and ignores the score).
+fn score_ranking(ranking: &[i64], candidates: &[String]) -> Vec<Scored> {
+    let n = candidates.len();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(ranking.len());
+    for &idx in ranking {
+        if idx < 0 {
+            continue;
+        }
+        let i = idx as usize;
+        if i < n && seen.insert(i) {
+            out.push(Scored {
+                index: i,
+                content: candidates[i].clone(),
+                score: (n - out.len()) as f32,
+            });
+        }
+    }
+    out
+}
+
+#[async_trait]
+impl Reranker for AnthropicReranker {
+    async fn rerank(&self, query: &str, candidates: &[String]) -> CoreResult<Vec<Scored>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let system = "Rank candidate memories by how well each one answers the question. \
+                      Return JSON {\"ranking\": [i, ...]} listing the candidate indices from \
+                      most to least relevant. Include every index exactly once.";
+        let listed = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("[{i}] {c}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user = format!("Question: {query}\n\nCandidates:\n{listed}");
+        // Size the output cap to the pool: a truncated ranking is a max_tokens stop,
+        // which complete() turns into a hard error that would drop the question from
+        // the scored set. Structured output keeps the body to JSON indices only.
+        let max_tokens = 1024u32.max(candidates.len() as u32 * 8);
+        let raw = complete(
+            &self.client,
+            &self.api_key,
+            &self.model,
+            system,
+            &user,
+            max_tokens,
+            Some(ranking_schema()),
+        )
+        .await
+        .map_err(|e| CoreError::Provider(e.to_string()))?;
+        let ranking: Ranking =
+            serde_json::from_str(&raw).map_err(|e| CoreError::Serde(e.to_string()))?;
+        Ok(score_ranking(&ranking.ranking, candidates))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn score_ranking_drops_bad_indices_and_orders_by_position() {
+        let candidates: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        // 2 then 0, with an out-of-range (9) and a repeat (2) that must be dropped.
+        let scored = score_ranking(&[2, 0, 9, 2], &candidates);
+        let order: Vec<usize> = scored.iter().map(|s| s.index).collect();
+        assert_eq!(order, vec![2, 0]);
+        assert_eq!(scored[0].content, "c");
+        assert!(scored[0].score > scored[1].score, "earlier rank scores higher");
+    }
+
+    #[test]
+    fn score_ranking_empty_when_nothing_valid() {
+        let candidates: Vec<String> = vec!["a".into()];
+        assert!(score_ranking(&[-1, 5], &candidates).is_empty());
+    }
 }

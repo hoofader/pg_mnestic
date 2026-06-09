@@ -3,18 +3,23 @@
 //! Run the Mnestic eval over a normalized dataset, against a live Postgres and real
 //! providers. Build with `--features real`.
 //!
-//! Env: ANTHROPIC_API_KEY (extraction, answer, judge), OPENAI_API_KEY (embeddings),
-//! DATABASE_URL (Postgres with the migrations applied or applyable). Arg 1: path to
-//! the dataset JSON. Real runs cost money (Opus 4.8 is $5/$25 per 1M tokens).
+//! Env: ANTHROPIC_API_KEY (extraction, answer, judge, rewrite, rerank), OPENAI_API_KEY
+//! (embeddings), DATABASE_URL (Postgres with the migrations applied or applyable). Arg
+//! 1: path to the dataset JSON. Real runs cost money (Opus 4.8 is $5/$25 per 1M tokens).
+//!
+//! Recall quality: a Claude query-rewriter and an LLM-as-reranker run per question by
+//! default (two extra Opus calls per question, one each; the reranker prompt also
+//! carries the candidate pool). Set MEMORYBENCH_REWRITE=0 / MEMORYBENCH_RERANK=0 to
+//! disable either and measure its lift or cut cost.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use mnestic_core::{Embedder, Extractor};
 use mnestic_engine::Engine;
 use mnestic_eval::dataset;
-use mnestic_eval::providers::{AnthropicAnswerer, AnthropicJudge};
+use mnestic_eval::providers::{AnthropicAnswerer, AnthropicJudge, AnthropicReranker, AnthropicRewriter};
 use mnestic_eval::run_eval;
 use mnestic_model::{AnthropicExtractor, OpenAiEmbedder};
 use mnestic_store::{run_migrations, Store};
@@ -23,6 +28,19 @@ use uuid::Uuid;
 
 /// Recall fan-out per question. Override with MEMORYBENCH_RECALL_LIMIT.
 const DEFAULT_RECALL_LIMIT: i64 = 10;
+
+/// Parse a 0/1/true/false toggle, defaulting when unset. A typo'd value is an error
+/// rather than a silent default, so a paid run never runs the wrong configuration.
+fn env_flag(name: &str, default: bool) -> Result<bool> {
+    match std::env::var(name) {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(anyhow!("{name} must be a boolean (0/1/true/false), got {other:?}")),
+        },
+        Err(_) => Ok(default),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,6 +54,10 @@ async fn main() -> Result<()> {
         Ok(v) => v.parse().context("MEMORYBENCH_RECALL_LIMIT must be an integer")?,
         Err(_) => DEFAULT_RECALL_LIMIT,
     };
+    // Validate the recall toggles before any DB work, so a typo'd flag fails before
+    // a run tenant is created (an orphan row otherwise).
+    let use_rewrite = env_flag("MEMORYBENCH_REWRITE", true)?;
+    let use_rerank = env_flag("MEMORYBENCH_RERANK", true)?;
 
     let cases = dataset::load(&PathBuf::from(&path))?;
     eprintln!("loaded {} cases from {path}", cases.len());
@@ -61,7 +83,14 @@ async fn main() -> Result<()> {
     let embedder: Arc<dyn Embedder> =
         Arc::new(OpenAiEmbedder::new(openai_key, "text-embedding-3-small"));
     let extractor: Arc<dyn Extractor> = Arc::new(AnthropicExtractor::new(&anthropic_key));
-    let engine = Engine::new(Store::new(pool), embedder, extractor);
+    let mut engine = Engine::new(Store::new(pool), embedder, extractor);
+    if use_rewrite {
+        engine = engine.with_rewriter(Arc::new(AnthropicRewriter::new(&anthropic_key)));
+    }
+    if use_rerank {
+        engine = engine.with_reranker(Arc::new(AnthropicReranker::new(&anthropic_key)));
+    }
+    eprintln!("recall: limit={recall_limit} rewrite={use_rewrite} rerank={use_rerank}");
 
     let answerer = AnthropicAnswerer::new(&anthropic_key);
     let judge = AnthropicJudge::new(&anthropic_key);
