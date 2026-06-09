@@ -33,10 +33,13 @@ CREATE TABLE mnestic_source (
 CREATE INDEX ON mnestic_source (tenant_id, actor_id, ingested_at DESC);
 CREATE INDEX ON mnestic_source (tenant_id) WHERE needs_extraction;
 
--- Documents & chunks: RAG side (LLD §2.3).
+-- Documents & chunks: RAG side (LLD §2.3). actor_id is denormalized onto both so
+-- document search scopes by actor the same way memory recall does, without a join back
+-- to the source; a supermemory containerTag resolves to an actor as the primary scope.
 CREATE TABLE mnestic_document (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id      uuid NOT NULL REFERENCES mnestic_tenant(id),
+  actor_id       text NOT NULL,
   source_id      uuid REFERENCES mnestic_source(id),
   container_tags text[] NOT NULL DEFAULT '{}',
   title          text,
@@ -44,10 +47,12 @@ CREATE TABLE mnestic_document (
   metadata       jsonb NOT NULL DEFAULT '{}',
   created_at     timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX ON mnestic_document (tenant_id, actor_id);
 
 CREATE TABLE mnestic_chunk (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id      uuid NOT NULL REFERENCES mnestic_tenant(id),
+  actor_id       text NOT NULL,
   document_id    uuid NOT NULL REFERENCES mnestic_document(id) ON DELETE CASCADE,
   container_tags text[] NOT NULL DEFAULT '{}',
   ord            int  NOT NULL,
@@ -59,6 +64,8 @@ CREATE TABLE mnestic_chunk (
 CREATE INDEX ON mnestic_chunk USING hnsw (embedding halfvec_cosine_ops);
 CREATE INDEX ON mnestic_chunk USING gin (content_tsv);
 CREATE INDEX ON mnestic_chunk (tenant_id, document_id, ord);
+CREATE INDEX ON mnestic_chunk (tenant_id, actor_id);
+CREATE INDEX ON mnestic_chunk USING gin (container_tags);
 
 -- Memories: content-primary hybrid, the core table (LLD §2.4).
 CREATE TABLE mnestic_memory (

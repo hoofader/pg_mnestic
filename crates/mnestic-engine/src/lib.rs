@@ -11,12 +11,12 @@ use mnestic_core::{
     decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, QueryRewriter,
     Reranker, ResolveAction, Scored,
 };
-use mnestic_store::{NewMemoryFull, Store};
+use mnestic_store::{NewChunk, NewMemoryFull, Store};
 use uuid::Uuid;
 
 mod error;
 pub use error::{Error, Result};
-pub use mnestic_store::{Profile, RecallHit};
+pub use mnestic_store::{ChunkHit, Profile, RecallHit};
 
 /// An actor's durable profile plus the memories most relevant to a query. Backs the
 /// supermemory `/v4/profile` shape (profile, optionally with query-scoped results).
@@ -24,6 +24,16 @@ pub use mnestic_store::{Profile, RecallHit};
 pub struct ProfileContext {
     pub profile: Profile,
     pub relevant: Vec<RecallHit>,
+}
+
+/// What `ingest_document` created. On an idempotent repeat (same `custom_id`),
+/// `idempotent_skip` is true and `document_id`/`chunk_ids` are empty.
+#[derive(Debug, Default, Clone)]
+pub struct DocumentResult {
+    pub source_id: Uuid,
+    pub document_id: Uuid,
+    pub chunk_ids: Vec<Uuid>,
+    pub idempotent_skip: bool,
 }
 
 /// What `add` did with each extracted candidate.
@@ -55,6 +65,12 @@ const DYNAMIC_CTX_CAP: i64 = 20;
 /// reranker reorders this pool and the top `limit` are returned. RECALL_SQL also
 /// clamps each signal's fan-out to at least 50, so the two agree for `limit <= 50`.
 const RERANK_POOL: i64 = 50;
+
+/// Document chunking defaults: window size and overlap in characters. ~1000 chars is
+/// a few sentences, enough context per chunk for retrieval; the overlap keeps a
+/// passage that straddles a boundary recoverable from the neighbouring chunk.
+const DOC_CHUNK_CHARS: usize = 1000;
+const DOC_CHUNK_OVERLAP: usize = 100;
 
 pub struct Engine {
     store: Store,
@@ -404,6 +420,136 @@ impl Engine {
             self.recall_scoped(tenant_id, actor_id, container_tags, query, limit).await?
         };
         Ok(ProfileContext { profile, relevant })
+    }
+
+    /// Ingest a document for RAG: chunk it, embed each chunk, and store the document
+    /// and its chunks in one transaction. Unlike `add`, the text is not run through
+    /// memory extraction; it is reference material retrieved by `search_documents`.
+    /// Idempotent on `custom_id`: a repeat returns the existing source with
+    /// `idempotent_skip` set and writes no new document or chunks.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ingest_document(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
+        title: Option<&str>,
+        uri: Option<&str>,
+        content: &str,
+        custom_id: Option<&str>,
+    ) -> Result<DocumentResult> {
+        // Reject an empty document up front: it would store a source and document row
+        // with no chunks, searchable by nothing.
+        if content.trim().is_empty() {
+            return Err(Error::EmptyDocument);
+        }
+        // Chunk and embed outside the transaction (the embed call is the slow part and
+        // must not pin a pooled connection); the writes then run as one atomic unit.
+        let chunks = mnestic_core::chunk_text(content, DOC_CHUNK_CHARS, DOC_CHUNK_OVERLAP);
+        let embeddings = if chunks.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(&chunks).await?
+        };
+        if embeddings.len() != chunks.len() {
+            return Err(Error::EmbeddingCountMismatch {
+                expected: chunks.len(),
+                got: embeddings.len(),
+            });
+        }
+
+        let mut tx = self.store.begin_tenant(tenant_id).await?;
+        // kind="document" anchors provenance and the custom_id idempotency key. Documents
+        // are not extraction targets (no needs_extraction), so the text is not also
+        // turned into memories; it is reachable only through search_documents.
+        let source_id = match Store::insert_source_tx(
+            &mut tx,
+            tenant_id,
+            actor_id,
+            container_tags,
+            "document",
+            content,
+            custom_id,
+        )
+        .await?
+        {
+            Some(id) => id,
+            None => {
+                let existing =
+                    Store::source_id_by_custom_id_tx(&mut tx, tenant_id, custom_id.unwrap_or(""))
+                        .await?
+                        .unwrap_or_default();
+                tx.commit().await?;
+                return Ok(DocumentResult {
+                    source_id: existing,
+                    idempotent_skip: true,
+                    ..Default::default()
+                });
+            }
+        };
+
+        let document_id = Store::insert_document_tx(
+            &mut tx,
+            tenant_id,
+            actor_id,
+            Some(source_id),
+            container_tags,
+            title,
+            uri,
+        )
+        .await?;
+
+        let mut chunk_ids = Vec::with_capacity(chunks.len());
+        for (ord, (chunk, embedding)) in chunks.iter().zip(&embeddings).enumerate() {
+            check_embedding_dim(embedding)?;
+            let id = Store::insert_chunk_tx(
+                &mut tx,
+                &NewChunk {
+                    tenant_id,
+                    actor_id,
+                    document_id,
+                    container_tags,
+                    ord: ord as i32,
+                    content: chunk,
+                    embedding,
+                },
+            )
+            .await?;
+            chunk_ids.push(id);
+        }
+        tx.commit().await?;
+
+        Ok(DocumentResult {
+            source_id,
+            document_id,
+            chunk_ids,
+            idempotent_skip: false,
+        })
+    }
+
+    /// Search an actor's document chunks for `query`, scoped to `container_tags`. The
+    /// query rewriter (when set) expands the query first, matching recall; the memory
+    /// reranker is not applied to chunks. Hits are chunk-level (`ChunkHit` carries the
+    /// `document_id`); a caller wanting the document title/uri joins `mnestic_document`.
+    pub async fn search_documents(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<ChunkHit>> {
+        let retrieval_query = match &self.rewriter {
+            Some(r) => r.rewrite(query).await?,
+            None => query.to_string(),
+        };
+        let mut embeddings = self.embedder.embed(std::slice::from_ref(&retrieval_query)).await?;
+        let qvec = embeddings.pop().unwrap_or_default();
+        check_embedding_dim(&qvec)?;
+        Ok(self
+            .store
+            .search_chunks(tenant_id, actor_id, &qvec, &retrieval_query, container_tags, limit)
+            .await?)
     }
 
     /// Forget the memories an earlier `add` produced under `custom_id`, tombstoning

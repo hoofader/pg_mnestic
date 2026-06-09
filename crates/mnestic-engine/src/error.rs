@@ -14,6 +14,8 @@ pub enum Error {
     EmbeddingCountMismatch { expected: usize, got: usize },
     #[error("embedding has {got} dimensions, expected {expected}")]
     EmbeddingDim { expected: usize, got: usize },
+    #[error("document content is empty")]
+    EmptyDocument,
     #[error("expected to close exactly one prior on supersession, closed {0}")]
     SupersedeFailed(u64),
     #[error("write kept conflicting after {0} attempts")]

@@ -68,6 +68,28 @@ pub struct RecallHit {
     pub score: f64,
 }
 
+/// Fields for one document chunk insert. Bundled so the insert stays under the
+/// argument-count lint and the call site reads as named fields.
+pub struct NewChunk<'a> {
+    pub tenant_id: Uuid,
+    pub actor_id: &'a str,
+    pub document_id: Uuid,
+    pub container_tags: &'a [String],
+    pub ord: i32,
+    pub content: &'a str,
+    pub embedding: &'a [f32],
+}
+
+/// One ranked document chunk returned by `search_chunks`.
+#[derive(Debug, Clone)]
+pub struct ChunkHit {
+    pub id: Uuid,
+    pub document_id: Uuid,
+    pub ord: i32,
+    pub content: String,
+    pub score: f64,
+}
+
 /// A fully specified memory row for the engine's write path. Unlike `NewMemory`,
 /// it carries the embedding, temporal bounds, and supersession lineage.
 pub struct NewMemoryFull<'a> {
@@ -498,6 +520,98 @@ impl Store {
             .collect())
     }
 
+    /// Insert a document row (provenance + metadata) in the caller's tx and return its
+    /// id. Chunks are inserted separately with `insert_chunk_tx`.
+    pub async fn insert_document_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        actor_id: &str,
+        source_id: Option<Uuid>,
+        container_tags: &[String],
+        title: Option<&str>,
+        uri: Option<&str>,
+    ) -> Result<Uuid> {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO mnestic_document \
+               (tenant_id, actor_id, source_id, container_tags, title, uri) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(source_id)
+        .bind(container_tags)
+        .bind(title)
+        .bind(uri)
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(id)
+    }
+
+    /// Insert one chunk of a document in the caller's tx. `content_tsv` is a generated
+    /// column, so only `content` and `embedding` are supplied; returns the chunk id.
+    pub async fn insert_chunk_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        c: &NewChunk<'_>,
+    ) -> Result<Uuid> {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO mnestic_chunk \
+               (tenant_id, actor_id, document_id, container_tags, ord, content, embedding) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7::halfvec) RETURNING id",
+        )
+        .bind(c.tenant_id)
+        .bind(c.actor_id)
+        .bind(c.document_id)
+        .bind(c.container_tags)
+        .bind(c.ord)
+        .bind(c.content)
+        .bind(vec_literal(c.embedding))
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(id)
+    }
+
+    /// Hybrid search over an actor's document chunks: vector and lexical fused with RRF,
+    /// scoped by tenant, actor, and an optional container_tags filter. Chunks are
+    /// immutable reference text, so there is no recency/confidence weighting or
+    /// supersession; the score is the fused rank alone.
+    pub async fn search_chunks(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        query_embedding: &[f32],
+        query_text: &str,
+        container_tags: &[String],
+        limit: i64,
+    ) -> Result<Vec<ChunkHit>> {
+        let qvec = vec_literal(query_embedding);
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        if !container_tags.is_empty() {
+            sqlx::query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+                .execute(&mut *tx)
+                .await?;
+        }
+        let rows = sqlx::query(CHUNK_SEARCH_SQL)
+            .bind(tenant_id)
+            .bind(qvec)
+            .bind(query_text)
+            .bind(actor_id)
+            .bind(limit)
+            .bind(container_tags)
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ChunkHit {
+                id: r.get("id"),
+                document_id: r.get("document_id"),
+                ord: r.get("ord"),
+                content: r.get("content"),
+                score: r.get("score"),
+            })
+            .collect())
+    }
+
     /// Recompute and upsert the actor's profile from current latest memories. A
     /// bounded recompute (top static facts plus a recent window) run inside the write
     /// transaction; an out-of-band debounced refresh is a scaling option.
@@ -617,6 +731,39 @@ SELECT m.id, m.content, m.subject, m.attribute, m.value, m.confidence, \
         * (0.5 + 0.5 * m.confidence))::float8 AS score \
 FROM fused f JOIN mnestic_memory m ON m.id = f.id \
 ORDER BY score DESC, recorded_at DESC NULLS LAST, m.id \
+LIMIT $5";
+
+// Document-chunk search. Same hybrid shape as RECALL_SQL (per-signal top-k inside the
+// index-driven subqueries, fused by RRF), but chunks are immutable reference text, so
+// there is no is_latest/status/recency/confidence. Scoped by tenant, actor, and the
+// optional container_tags filter ($6). Binds match recall_memories: limit is $5.
+const CHUNK_SEARCH_SQL: &str = "\
+WITH vec AS ( \
+  SELECT id, row_number() OVER (ORDER BY dist) AS rnk FROM ( \
+    SELECT id, embedding <=> $2::halfvec AS dist FROM mnestic_chunk \
+    WHERE tenant_id = $1 AND actor_id = $4 AND embedding IS NOT NULL \
+      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
+    ORDER BY embedding <=> $2::halfvec LIMIT greatest(50, $5) \
+  ) t \
+), \
+lex AS ( \
+  SELECT id, row_number() OVER (ORDER BY lr DESC) AS rnk FROM ( \
+    SELECT id, ts_rank(content_tsv, plainto_tsquery('english', $3)) AS lr \
+    FROM mnestic_chunk \
+    WHERE tenant_id = $1 AND actor_id = $4 \
+      AND content_tsv @@ plainto_tsquery('english', $3) \
+      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
+    ORDER BY lr DESC LIMIT greatest(50, $5) \
+  ) t \
+), \
+fused AS ( \
+  SELECT id, SUM(1.0 / (60 + rnk)) AS rrf \
+  FROM (SELECT id, rnk FROM vec UNION ALL SELECT id, rnk FROM lex) u \
+  GROUP BY id \
+) \
+SELECT c.id, c.document_id, c.ord, c.content, f.rrf::float8 AS score \
+FROM fused f JOIN mnestic_chunk c ON c.id = f.id \
+ORDER BY score DESC, c.id \
 LIMIT $5";
 
 /// Render an embedding as a pgvector text literal (`[a,b,c]`) for a `::halfvec`
