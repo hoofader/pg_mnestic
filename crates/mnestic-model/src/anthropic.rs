@@ -125,3 +125,36 @@ impl Extractor for AnthropicExtractor {
         Ok(extraction.memories.into_iter().map(into_candidate).collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mnestic_core::Ctx;
+
+    // Live, paid, non-deterministic: hits the real Messages API, so it is ignored by
+    // default. Run with ANTHROPIC_API_KEY set:
+    //   cargo test -p mnestic-model --features anthropic -- --ignored
+    // Guards EXTRACT_SYSTEM_PROMPT: update phrasing must yield a single-valued triple
+    // whose attribute canonicalizes to the prior fact's key, so the engine supersedes
+    // the old value instead of keeping it.
+    #[tokio::test]
+    #[ignore]
+    async fn update_phrasing_yields_single_valued_new_value() {
+        let key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY");
+        let extractor = AnthropicExtractor::new(key);
+        let cands = extractor
+            .extract(
+                "I left Acme and now work at Globex as a staff engineer.",
+                &Ctx::default(),
+            )
+            .await
+            .expect("extraction");
+        let onto = mnestic_core::Ontology::starter();
+        assert!(
+            cands.iter().any(|c| c.single_valued
+                && c.attribute.as_deref().is_some_and(|a| onto.canonical_attribute(a) == "employer")
+                && c.value.as_deref().is_some_and(|v| v.to_lowercase().contains("globex"))),
+            "expected a single-valued employer=Globex triple, got {cands:?}"
+        );
+    }
+}

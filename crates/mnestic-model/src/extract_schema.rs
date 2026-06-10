@@ -94,7 +94,16 @@ pub(crate) const EXTRACT_SYSTEM_PROMPT: &str = "Extract entity-centric memories 
 Return only JSON: { \"memories\": [ { \"content\": string, \"subject\": string|null, \
 \"attribute\": string|null, \"value\": string|null, \"single_valued\": bool, \
 \"mem_type\": \"fact\"|\"preference\"|\"episode\", \"confidence\": number, \
-\"is_static\": bool } ] }.";
+\"is_static\": bool } ] }. \
+For a fact that holds one current value at a time (who the user works for, where they \
+live, their job title, relationship status), set single_valued true and fill subject, \
+attribute, and value, using a short lowercase attribute key such as \"employer\", \
+\"location\", or \"role\". Attributes that can hold several values at once (languages, \
+skills, hobbies, pets) stay single_valued false, even with words like \"now\" or \
+\"also\". When the text reports a change (\"now\", \"moved to\", \"switched to\", \"no \
+longer\", \"left X and joined Y\") to a single-valued fact, record the NEW current value \
+as that triple, not just a note that it changed; the older value is replaced \
+automatically.";
 
 /// JSON Schema for the extraction output, for providers that constrain output to a
 /// schema (the Anthropic Messages API `output_config.format`). Structured output
@@ -130,4 +139,23 @@ pub(crate) fn extraction_json_schema() -> serde_json::Value {
         },
         "required": ["memories"]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mnestic_core::Ontology;
+
+    #[test]
+    fn prompt_steers_to_convergent_canonical_keys() {
+        // The single-valued example keys named in the prompt must be the ontology's
+        // canonical form AND converge with the surface forms the model uses elsewhere,
+        // or an update lands under a different key and never supersedes the prior fact.
+        let onto = Ontology::starter();
+        for (key, surface) in [("employer", "works at"), ("location", "lives in"), ("role", "job title")] {
+            assert!(EXTRACT_SYSTEM_PROMPT.contains(key), "prompt should name the {key:?} key");
+            assert_eq!(onto.canonical_attribute(key), key, "{key:?} must be canonical");
+            assert_eq!(onto.canonical_attribute(surface), key, "{surface:?} must converge to {key:?}");
+        }
+    }
 }
