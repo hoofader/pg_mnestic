@@ -3,5 +3,10 @@ target/
 .DS_Store
 .env
 
+# Eval datasets and downloads (LongMemEval files, converted + synthetic), never committed.
+/data/
+dataset.json
+dataset.small.json
+
 # oh-my-claudecode tooling state
 .omc/

@@ -220,7 +220,8 @@ fn judge_prompt(category: Option<&str>, abstention: bool, question: &str, gold: 
 /// Expands a question into a retrieval query before recall, to widen lexical and
 /// vector matching. The engine reranks the retrieved pool against the original
 /// question, so expansion costs in-pool ordering (which rerank repairs), not the
-/// final order. Its net effect on recall is what MEMORYBENCH_REWRITE measures.
+/// final order. Its net effect on recall is what the `rewrite` and `both` eval modes
+/// measure.
 pub struct AnthropicRewriter {
     client: reqwest::Client,
     api_key: String,

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use mnestic_engine::Engine;
@@ -38,27 +40,49 @@ pub struct RunReport {
     pub score: MemScore,
 }
 
-/// Ingest each case's sessions into memory, then answer its questions from recall
-/// and grade them. A failure ingesting a case skips that case's questions; a failure
-/// on a single question is recorded and the run continues. The returned report
-/// always reflects the work that succeeded, so a mid-run error never loses progress.
-pub async fn run_eval(
+/// Outcome of the ingest phase: any per-case ingest errors and the ids of cases that
+/// failed (so the evaluate phase can skip their questions).
+pub struct IngestOutcome {
+    pub errors: Vec<String>,
+    pub failed: HashSet<String>,
+}
+
+/// Ingest every case's sessions into memory. This is the expensive, mode-independent
+/// phase (one extraction call per session); run it once, then evaluate the same stored
+/// memory under several recall modes with `evaluate_cases`.
+pub async fn ingest_cases(engine: &Engine, tenant_id: Uuid, cases: &[Case]) -> IngestOutcome {
+    let mut errors = Vec::new();
+    let mut failed = HashSet::new();
+    for case in cases {
+        let actor = format!("case:{}", case.id);
+        if let Err(e) = ingest_case(engine, tenant_id, &actor, case).await {
+            errors.push(format!("case {}: ingest failed: {e:#}", case.id));
+            failed.insert(case.id.clone());
+        }
+    }
+    IngestOutcome { errors, failed }
+}
+
+/// Answer and grade every question against already-ingested memory. The `engine`
+/// carries the recall mode (its optional rewriter/reranker), so calling this with
+/// engines that differ only in those, over the same tenant, measures their effect on
+/// identical memory. Cases in `failed` (ingest failed) are skipped, not scored.
+pub async fn evaluate_cases(
     engine: &Engine,
     tenant_id: Uuid,
     answerer: &dyn Answerer,
     judge: &dyn Judge,
     recall_limit: i64,
     cases: &[Case],
+    failed: &HashSet<String>,
 ) -> RunReport {
     let mut results = Vec::new();
     let mut errors = Vec::new();
-
     for case in cases {
-        let actor = format!("case:{}", case.id);
-        if let Err(e) = ingest_case(engine, tenant_id, &actor, case).await {
-            errors.push(format!("case {}: ingest failed: {e:#}", case.id));
+        if failed.contains(&case.id) {
             continue;
         }
+        let actor = format!("case:{}", case.id);
         for qa in &case.questions {
             match score_question(engine, tenant_id, &actor, recall_limit, answerer, judge, qa).await
             {
@@ -67,13 +91,35 @@ pub async fn run_eval(
             }
         }
     }
-
     let score = MemScore::from_results(&results);
     RunReport {
         results,
         errors,
         score,
     }
+}
+
+/// Ingest each case's sessions into memory, then answer its questions from recall and
+/// grade them, in one pass with the engine's configured recall mode. A failure
+/// ingesting a case skips that case's questions; a failure on a single question is
+/// recorded and the run continues. The returned report always reflects the work that
+/// succeeded, so a mid-run error never loses progress.
+pub async fn run_eval(
+    engine: &Engine,
+    tenant_id: Uuid,
+    answerer: &dyn Answerer,
+    judge: &dyn Judge,
+    recall_limit: i64,
+    cases: &[Case],
+) -> RunReport {
+    let ingest = ingest_cases(engine, tenant_id, cases).await;
+    let mut report =
+        evaluate_cases(engine, tenant_id, answerer, judge, recall_limit, cases, &ingest.failed).await;
+    // Surface ingest failures alongside the per-question ones, ingest first.
+    let mut errors = ingest.errors;
+    errors.append(&mut report.errors);
+    report.errors = errors;
+    report
 }
 
 async fn ingest_case(engine: &Engine, tenant_id: Uuid, actor: &str, case: &Case) -> Result<()> {

@@ -18,5 +18,7 @@ pub mod score;
 pub mod providers;
 
 pub use dataset::{Case, Qa, Turn};
-pub use runner::{run_eval, Answerer, Judge, RunReport};
+pub use runner::{
+    evaluate_cases, ingest_cases, run_eval, Answerer, IngestOutcome, Judge, RunReport,
+};
 pub use score::{MemScore, QuestionResult};
