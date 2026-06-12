@@ -29,11 +29,26 @@ struct LmeInstance {
     question_id: String,
     question_type: String,
     question: String,
-    answer: String,
+    // Usually a string, but counting/temporal items use a bare number (e.g. 3), so
+    // accept any JSON scalar and render it in `answer_to_string`.
+    answer: serde_json::Value,
     #[serde(default)]
     haystack_dates: Vec<String>,
     #[serde(default)]
     haystack_sessions: Vec<Vec<LmeTurn>>,
+}
+
+/// Render a LongMemEval answer to the string the judge compares against. A string
+/// passes through; a number or bool uses its text, so `3` becomes "3" rather than
+/// aborting the parse. A non-scalar (null, array, object) is a data defect and errors
+/// rather than feeding the judge a misleading gold like "null".
+fn answer_to_string(v: &serde_json::Value) -> Result<String> {
+    match v {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        serde_json::Value::Bool(b) => Ok(b.to_string()),
+        other => Err(anyhow!("answer must be a string, number, or bool, got {other}")),
+    }
 }
 
 fn parse_date(s: &str) -> Result<DateTime<Utc>> {
@@ -86,12 +101,15 @@ pub fn convert(raw: &str) -> Result<Vec<Case>> {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let answer = answer_to_string(&inst.answer)
+            .with_context(|| format!("instance {}", inst.question_id))?;
+
         cases.push(Case {
             id: inst.question_id,
             sessions,
             questions: vec![Qa {
                 question: inst.question,
-                answer: inst.answer,
+                answer,
                 question_type: Some(inst.question_type),
                 abstention,
             }],
@@ -148,5 +166,22 @@ mod tests {
         assert_eq!(abs.id, "q2_abs");
         assert!(abs.questions[0].abstention, "_abs question must be flagged");
         assert_eq!(abs.questions[0].question_type.as_deref(), Some("single-session-user"));
+    }
+
+    #[test]
+    fn numeric_answer_is_rendered_as_string() {
+        // Counting/temporal items carry a bare number; it must not abort the parse.
+        let raw = r#"[{"question_id":"c1","question_type":"multi-session","question":"How many?",
+                       "answer":3,"haystack_dates":[],"haystack_sessions":[]}]"#;
+        let cases = convert(raw).unwrap();
+        assert_eq!(cases[0].questions[0].answer, "3");
+    }
+
+    #[test]
+    fn non_scalar_answer_errors() {
+        // A null/array/object answer is a data defect, not a gold string.
+        let raw = r#"[{"question_id":"x","question_type":"t","question":"?",
+                       "answer":null,"haystack_dates":[],"haystack_sessions":[]}]"#;
+        assert!(convert(raw).is_err());
     }
 }
