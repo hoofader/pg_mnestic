@@ -470,6 +470,31 @@ impl Store {
         Ok(ids)
     }
 
+    /// Tombstone a single memory by id (content-based forget targets ids found by key
+    /// match). Same bitemporal close as the source variant: system time closed, event
+    /// time kept. Returns rows affected (0 if it was not active). Caller's tx.
+    pub async fn forget_memory_by_id_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        id: Uuid,
+        reason: Option<&str>,
+    ) -> Result<u64> {
+        let done = sqlx::query(
+            "UPDATE mnestic_memory SET status = 'forgotten', is_latest = false, \
+                    forget_reason = $3, \
+                    recorded_time = CASE WHEN now() > lower(recorded_time) \
+                                         THEN tstzrange(lower(recorded_time), now()) \
+                                         ELSE recorded_time END \
+             WHERE tenant_id = $1 AND id = $2 AND status = 'active'",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     /// Hybrid recall over the actor's latest active memories: vector similarity and
     /// lexical (tsvector) relevance fused with reciprocal-rank fusion, then weighted
     /// by recency decay and confidence (LLD §5.4). Superseded, non-latest, and

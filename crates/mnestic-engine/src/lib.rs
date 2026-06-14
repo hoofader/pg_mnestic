@@ -591,6 +591,69 @@ impl Engine {
         tx.commit().await?;
         Ok(ids)
     }
+
+    /// Forget by content (the supermemory `memory` tool's content-based forget). Extract
+    /// the facts the text describes and tombstone the actor's latest active memory for
+    /// each resolved (subject, attribute) key. When the content names a value, only the
+    /// row carrying that value is removed, so "forget I worked at Acme" cannot delete a
+    /// since-updated employer; a keyless mention ("forget where I work") wipes the key's
+    /// latest row. Content that yields no structured key matches nothing: forget is
+    /// destructive, so it errs toward removing too little. Returns the tombstoned ids;
+    /// the profile refresh shares the transaction.
+    pub async fn forget_by_content(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        content: &str,
+    ) -> Result<Vec<Uuid>> {
+        let ctx = Ctx { actor_id: actor_id.to_string(), container_tags: Vec::new() };
+        let candidates = self.extractor.extract(content, &ctx).await?;
+
+        let mut tx = self.store.begin_tenant(tenant_id).await?;
+        let mut forgotten = Vec::new();
+        for cand in &candidates {
+            let subject = cand
+                .subject
+                .as_deref()
+                .map(|s| self.ontology.normalize_subject(s))
+                .filter(|s| !s.is_empty());
+            let attribute = cand
+                .attribute
+                .as_deref()
+                .map(|a| self.ontology.canonical_attribute(a))
+                .filter(|a| !a.is_empty());
+            let (Some(s), Some(a)) = (subject, attribute) else { continue };
+            let want_value = cand.value.as_deref().map(str::trim).filter(|v| !v.is_empty());
+
+            for m in Store::latest_matches_tx(&mut tx, tenant_id, actor_id, &s, &a).await? {
+                let value_matches = match (want_value, m.value.as_deref()) {
+                    (None, _) => true,
+                    (Some(w), Some(stored)) => w.eq_ignore_ascii_case(stored.trim()),
+                    (Some(_), None) => false,
+                };
+                if !value_matches {
+                    continue;
+                }
+                let id = parse_id(&m.id)?;
+                if Store::forget_memory_by_id_tx(&mut tx, tenant_id, id, Some("forgotten by content")).await? == 1 {
+                    forgotten.push(id);
+                }
+            }
+        }
+        if !forgotten.is_empty() {
+            Store::refresh_profile_tx(
+                &mut tx,
+                tenant_id,
+                actor_id,
+                STATIC_CONFIDENCE,
+                STATIC_FACTS_CAP,
+                DYNAMIC_CTX_CAP,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(forgotten)
+    }
 }
 
 /// Apply a single-valued contradiction in event-time order (LLD §5.2). A candidate

@@ -16,6 +16,7 @@ pub mod container_tag;
 mod documents;
 pub mod error;
 mod memories;
+mod memory_tool;
 mod query;
 
 pub use container_tag::{parse_container_tag, reconstruct_container_tag, Scope};
@@ -33,6 +34,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v4/memories", post(memories::add_memory))
+        .route("/v4/memory", post(memory_tool::memory_tool))
         .route("/v4/search", post(query::search))
         .route("/v4/profile", post(query::profile))
         .route("/v3/documents", post(documents::ingest_document))
