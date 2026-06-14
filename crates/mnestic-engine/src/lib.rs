@@ -242,7 +242,12 @@ impl Engine {
             actor_id: actor_id.to_string(),
             container_tags: container_tags.to_vec(),
         };
-        let candidates = self.extractor.extract(content, &ctx).await?;
+        let mut candidates = self.extractor.extract(content, &ctx).await?;
+        // Drop empty-content candidates: they carry no memory and some embedders reject
+        // an empty string in a batch, which would abort the whole ingest. content is the
+        // embed text and the canonical memory, so a blank one has nothing to embed or
+        // store even if it carried a triple (structured-only rows are not a path today).
+        candidates.retain(|c| !c.content.trim().is_empty());
         let texts: Vec<String> = candidates.iter().map(|c| c.content.clone()).collect();
         let embeddings = if texts.is_empty() {
             Vec::new()
