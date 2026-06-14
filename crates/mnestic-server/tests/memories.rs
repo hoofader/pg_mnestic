@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Dockerized test for POST /v4/memories over the full stack: bearer auth via the
+//! api_key table, containerTag scoping, and a real engine (mock providers) writing to
+//! Postgres. Driven with tower::oneshot, so no port bind and no network providers.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use mnestic_core::{Embedder, Extractor};
+use mnestic_engine::Engine;
+use mnestic_model::{MockEmbedder, MockExtractor};
+use mnestic_server::{app, AppState};
+use mnestic_store::{run_migrations, Store};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{GenericImage, ImageExt};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+async fn connect(opts: PgConnectOptions) -> PgPool {
+    let mut last_err = None;
+    for _ in 0..30 {
+        match PgPoolOptions::new().max_connections(5).connect_with(opts.clone()).await {
+            Ok(pool) => return pool,
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    panic!("could not connect to postgres: {last_err:?}");
+}
+
+fn post(token: Option<&str>, body: &str) -> Request<Body> {
+    let mut b = Request::builder()
+        .method("POST")
+        .uri("/v4/memories")
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        b = b.header("authorization", format!("Bearer {t}"));
+    }
+    b.body(Body::from(body.to_string())).unwrap()
+}
+
+async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn add_memory_endpoint() {
+    let container = GenericImage::new("pgvector/pgvector", "pg16")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_PASSWORD", "postgres")
+        .start()
+        .await
+        .expect("start pgvector container");
+
+    let host = container.get_host().await.expect("host");
+    let port = container.get_host_port_ipv4(5432.tcp()).await.expect("mapped port");
+    let opts = PgConnectOptions::new()
+        .host(&host.to_string())
+        .port(port)
+        .username("postgres")
+        .password("postgres")
+        .database("postgres");
+    let pool = connect(opts).await;
+    run_migrations(&pool).await.expect("migrations");
+
+    let tenant: Uuid =
+        sqlx::query_scalar("INSERT INTO mnestic_tenant (external_id) VALUES ('srv') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("tenant");
+    sqlx::query("INSERT INTO mnestic_api_key (token_sha256, tenant_id) VALUES (digest($1, 'sha256'), $2)")
+        .bind("sk-test")
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .expect("api key");
+
+    let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+    let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
+    let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
+    let state = AppState { engine: engine.clone() };
+
+    // No token and a wrong token are both rejected.
+    let resp = app(state.clone())
+        .oneshot(post(None, r#"{"content":"x","containerTag":"alice"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "missing token");
+    let resp = app(state.clone())
+        .oneshot(post(Some("nope"), r#"{"content":"x","containerTag":"alice"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "wrong token");
+
+    // A valid save: containerTag org:7:user:99 scopes to actor user:99.
+    let resp = app(state.clone())
+        .oneshot(post(
+            Some("sk-test"),
+            r#"{"content":"the user loves climbing","containerTag":"org:7:user:99","customId":"m1"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["status"], "saved");
+    assert_eq!(j["containerTag"], "org:7:user:99", "echoes the caller's tag");
+
+    let hits = engine.recall(tenant, "user:99", "climbing", 10).await.unwrap();
+    assert!(
+        hits.iter().any(|h| h.content.as_deref() == Some("the user loves climbing")),
+        "memory stored under the parsed actor"
+    );
+
+    // Same customId is an idempotent skip.
+    let resp = app(state.clone())
+        .oneshot(post(
+            Some("sk-test"),
+            r#"{"content":"the user loves climbing","containerTag":"org:7:user:99","customId":"m1"}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert_eq!(j["status"], "skipped", "repeat customId is skipped");
+
+    // Empty content is a 400.
+    let resp = app(state)
+        .oneshot(post(Some("sk-test"), r#"{"content":"   ","containerTag":"alice"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

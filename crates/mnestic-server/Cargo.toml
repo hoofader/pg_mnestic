@@ -6,4 +6,29 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# The runnable server binary, wired to the real cloud providers.
+serve = ["dep:mnestic-model", "mnestic-model/openai", "mnestic-model/anthropic"]
+
 [dependencies]
+mnestic-core = { workspace = true }
+mnestic-engine = { workspace = true }
+mnestic-store = { workspace = true }
+mnestic-model = { workspace = true, optional = true }
+axum = "0.7"
+# `net` (on top of the workspace base) is for the binary's TcpListener.
+tokio = { workspace = true, features = ["net"] }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+mnestic-model = { workspace = true }
+testcontainers = "0.27"
+tower = { version = "0.5", features = ["util"] }
+
+[[bin]]
+name = "serve"
+required-features = ["serve"]

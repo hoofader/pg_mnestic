@@ -167,6 +167,15 @@ CREATE TABLE mnestic_profile (
   PRIMARY KEY (tenant_id, actor_id)
 );
 
+-- API keys for the compat layer (doc 04 §2): one key resolves to one tenant, the RLS
+-- boundary. Only the SHA-256 of the bearer token is stored, never the token. This is the
+-- pre-auth bootstrap lookup, so it carries no RLS (the tenant GUC is not set yet).
+CREATE TABLE mnestic_api_key (
+  token_sha256 bytea PRIMARY KEY,
+  tenant_id    uuid NOT NULL REFERENCES mnestic_tenant(id),
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+
 -- Row-Level Security (LLD §3).
 -- The engine sets `mnestic.tenant_id` per transaction via SET LOCAL; policies enforce
 -- isolation regardless of application correctness. The `true` second arg to current_setting
