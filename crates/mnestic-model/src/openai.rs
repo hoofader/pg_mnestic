@@ -9,7 +9,7 @@ use mnestic_core::{Candidate, Ctx, Embedder, Error, Extractor, Result};
 use serde::Deserialize;
 
 use crate::extract_schema::{
-    ensure_success, http_client, into_candidate, Extraction, EXTRACT_SYSTEM_PROMPT,
+    http_client, into_candidate, send_with_retry, Extraction, EXTRACT_SYSTEM_PROMPT,
 };
 
 const DEFAULT_BASE: &str = "https://api.openai.com/v1";
@@ -51,15 +51,13 @@ struct EmbeddingDatum {
 impl Embedder for OpenAiEmbedder {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let body = serde_json::json!({ "model": self.model, "input": texts });
-        let resp = self
-            .client
-            .post(format!("{}/embeddings", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
-        let resp = ensure_success(resp).await?;
+        let resp = send_with_retry(|| {
+            self.client
+                .post(format!("{}/embeddings", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+        })
+        .await?;
         let parsed: EmbeddingResponse = resp
             .json()
             .await
@@ -117,15 +115,13 @@ impl Extractor for OpenAiExtractor {
                 { "role": "user", "content": text },
             ],
         });
-        let resp = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
-        let resp = ensure_success(resp).await?;
+        let resp = send_with_retry(|| {
+            self.client
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+        })
+        .await?;
         let chat: ChatResponse = resp
             .json()
             .await

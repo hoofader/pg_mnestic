@@ -8,8 +8,8 @@ repository.workspace = true
 
 [features]
 default = []
-openai = ["dep:reqwest", "dep:serde_json"]
-anthropic = ["dep:reqwest", "dep:serde_json"]
+openai = ["dep:reqwest", "dep:serde_json", "dep:tokio"]
+anthropic = ["dep:reqwest", "dep:serde_json", "dep:tokio"]
 
 [dependencies]
 mnestic-core = { workspace = true }
@@ -17,6 +17,9 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 reqwest = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+# Only for the cloud providers' retry backoff (tokio::time::sleep); the default
+# offline build pulls no tokio.
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

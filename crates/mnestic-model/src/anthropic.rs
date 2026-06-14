@@ -15,7 +15,7 @@ use mnestic_core::{Candidate, Ctx, Error, Extractor, Result};
 use serde::Deserialize;
 
 use crate::extract_schema::{
-    ensure_success, extraction_json_schema, http_client, into_candidate, Extraction,
+    extraction_json_schema, http_client, into_candidate, send_with_retry, Extraction,
     EXTRACT_SYSTEM_PROMPT,
 };
 
@@ -89,16 +89,14 @@ impl Extractor for AnthropicExtractor {
                 "format": { "type": "json_schema", "schema": extraction_json_schema() }
             }
         });
-        let resp = self
-            .client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
-        let resp = ensure_success(resp).await?;
+        let resp = send_with_retry(|| {
+            self.client
+                .post(format!("{}/v1/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+        })
+        .await?;
         let message: MessagesResponse = resp
             .json()
             .await
@@ -155,6 +153,28 @@ mod tests {
                 && c.attribute.as_deref().is_some_and(|a| onto.canonical_attribute(a) == "employer")
                 && c.value.as_deref().is_some_and(|v| v.to_lowercase().contains("globex"))),
             "expected a single-valued employer=Globex triple, got {cands:?}"
+        );
+    }
+
+    // Live, paid, ignored (see above). Guards that salient assistant-provided content
+    // is captured, not just user facts, so single-session-assistant questions have
+    // something to recall.
+    #[tokio::test]
+    #[ignore]
+    async fn assistant_provided_fact_is_extracted() {
+        let key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY");
+        let extractor = AnthropicExtractor::new(key);
+        let cands = extractor
+            .extract(
+                "user: Can you set the Sunday shift for the social media team?\n\
+                 assistant: Done. Admon is assigned to the 8 am - 4 pm Day Shift on Sundays.",
+                &Ctx::default(),
+            )
+            .await
+            .expect("extraction");
+        assert!(
+            cands.iter().any(|c| c.content.to_lowercase().contains("admon")),
+            "expected the assistant-provided shift fact to be captured, got {cands:?}"
         );
     }
 }

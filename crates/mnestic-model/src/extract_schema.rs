@@ -10,14 +10,47 @@ use std::time::Duration;
 use mnestic_core::{Candidate, Error, MemType, Result, Temporal};
 use serde::Deserialize;
 
-/// A request timeout matters because extraction runs inside the engine's open
-/// transaction; a hung connection would otherwise pin a pooled connection.
-/// TODO(phase1): retry with backoff that distinguishes 429/529 from 4xx.
+/// A request timeout bounds a hung connection. Extraction and embedding run before the
+/// write transaction opens, so a slow call or a retry backoff only delays the caller,
+/// it does not pin a pooled connection.
 pub(crate) fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client builds from a static config")
+}
+
+/// Send a request with bounded exponential backoff, rebuilding it each attempt via
+/// `build`. Retries transient failures (a network/timeout send error, or 429/5xx/529)
+/// so a blip mid-ingest does not abort the caller; a 4xx other than 429 is returned at
+/// once via `ensure_success`. The raw HTTP path has no SDK retry, so this is it.
+pub(crate) async fn send_with_retry<F>(build: F) -> Result<reqwest::Response>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    const MAX_ATTEMPTS: u32 = 4;
+    for attempt in 0..MAX_ATTEMPTS {
+        let last = attempt + 1 == MAX_ATTEMPTS;
+        match build().send().await {
+            Ok(resp) => {
+                let transient = matches!(resp.status().as_u16(), 408 | 429 | 500 | 502 | 503 | 529);
+                if transient && !last {
+                    backoff(attempt).await;
+                    continue;
+                }
+                return ensure_success(resp).await;
+            }
+            // Only a timeout or failure to connect is worth retrying; a DNS, TLS, or
+            // connection-refused error will not heal in a few seconds, so surface it now.
+            Err(e) if !last && (e.is_timeout() || e.is_connect()) => backoff(attempt).await,
+            Err(e) => return Err(Error::Provider(e.to_string())),
+        }
+    }
+    unreachable!("loop returns on the last attempt")
+}
+
+async fn backoff(attempt: u32) {
+    tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt))).await;
 }
 
 /// Fold a non-2xx response into a provider error that carries the status AND the
@@ -90,7 +123,11 @@ pub(crate) fn into_candidate(m: RawMemory) -> Candidate {
     }
 }
 
-pub(crate) const EXTRACT_SYSTEM_PROMPT: &str = "Extract entity-centric memories from the user text. \
+pub(crate) const EXTRACT_SYSTEM_PROMPT: &str = "Extract memories from the conversation. \
+Capture facts the user states about themselves, and salient information the assistant \
+gave the user that may be asked about later (recommendations, plans, schedules, lists, \
+figures, decisions). Record each as a self-contained `content` statement; skip \
+greetings and filler. \
 Return only JSON: { \"memories\": [ { \"content\": string, \"subject\": string|null, \
 \"attribute\": string|null, \"value\": string|null, \"single_valued\": bool, \
 \"mem_type\": \"fact\"|\"preference\"|\"episode\", \"confidence\": number, \
