@@ -1392,6 +1392,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnestic-server"
+version = "0.0.0"
+
+[[package]]
 name = "mnestic-store"
 version = "0.0.0"
 dependencies = [

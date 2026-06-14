@@ -6,6 +6,7 @@ members = [
     "crates/mnestic-engine",
     "crates/mnestic-eval",
     "crates/mnestic-model",
+    "crates/mnestic-server",
     "crates/mnestic-store",
 ]
 
