@@ -13,16 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::authenticate;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
-use crate::{resolve_container_tag, AppState};
-
-/// Recall fan-out when the caller does not specify one, and the cap on what it may ask
-/// for, so a client value cannot push a giant query or a negative SQL `LIMIT`.
-const DEFAULT_LIMIT: i64 = 10;
-const MAX_LIMIT: i64 = 100;
-
-fn clamp_limit(limit: Option<i64>) -> i64 {
-    limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
-}
+use crate::{clamp_limit, resolve_container_tag, AppState};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

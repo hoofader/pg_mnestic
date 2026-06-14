@@ -13,6 +13,7 @@ use mnestic_engine::Engine;
 
 pub mod auth;
 pub mod container_tag;
+mod documents;
 pub mod error;
 mod memories;
 mod query;
@@ -34,6 +35,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v4/memories", post(memories::add_memory))
         .route("/v4/search", post(query::search))
         .route("/v4/profile", post(query::profile))
+        .route("/v3/documents", post(documents::ingest_document))
+        .route("/v3/search", post(documents::search_documents))
         // Bound the body so a single request cannot push a huge extract/embed job.
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
@@ -41,6 +44,15 @@ pub fn app(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Recall fan-out default and cap. Clamping a client value keeps it out of a negative
+/// SQL `LIMIT` (a 500) and bounds how large a single query can get.
+const DEFAULT_LIMIT: i64 = 10;
+const MAX_LIMIT: i64 = 100;
+
+pub(crate) fn clamp_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
 /// supermemory sends the same scope as either a singular `containerTag` or a plural
