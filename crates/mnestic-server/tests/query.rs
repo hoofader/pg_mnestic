@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Dockerized test for POST /v4/memories over the full stack: bearer auth via the
-//! api_key table, containerTag scoping, and a real engine (mock providers) writing to
-//! Postgres. Driven with tower::oneshot, so no port bind and no network providers.
+//! Dockerized test for /v4/search and /v4/profile: ingest under an actor via the
+//! engine, then drive the read endpoints with tower::oneshot and a mock engine.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,15 +34,14 @@ async fn connect(opts: PgConnectOptions) -> PgPool {
     panic!("could not connect to postgres: {last_err:?}");
 }
 
-fn post(token: Option<&str>, body: &str) -> Request<Body> {
-    let mut b = Request::builder()
+fn post(uri: &str, token: &str, body: &str) -> Request<Body> {
+    Request::builder()
         .method("POST")
-        .uri("/v4/memories")
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        b = b.header("authorization", format!("Bearer {t}"));
-    }
-    b.body(Body::from(body.to_string())).unwrap()
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
@@ -52,7 +50,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn add_memory_endpoint() {
+async fn search_and_profile_endpoints() {
     let container = GenericImage::new("pgvector/pgvector", "pg16")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -75,7 +73,7 @@ async fn add_memory_endpoint() {
     run_migrations(&pool).await.expect("migrations");
 
     let tenant: Uuid =
-        sqlx::query_scalar("INSERT INTO mnestic_tenant (external_id) VALUES ('srv') RETURNING id")
+        sqlx::query_scalar("INSERT INTO mnestic_tenant (external_id) VALUES ('q') RETURNING id")
             .fetch_one(&pool)
             .await
             .expect("tenant");
@@ -91,65 +89,59 @@ async fn add_memory_endpoint() {
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
     let state = AppState { engine: engine.clone() };
 
-    // No token and a wrong token are both rejected.
-    let resp = app(state.clone())
-        .oneshot(post(None, r#"{"content":"x","containerTag":"alice"}"#))
+    // Seed memory under actor user:99 (the actor a containerTag of org:7:user:99 maps to).
+    engine
+        .add(tenant, "user:99", &["org:7".to_string()], "the user loves climbing", "conversation", None)
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "missing token");
-    let resp = app(state.clone())
-        .oneshot(post(Some("nope"), r#"{"content":"x","containerTag":"alice"}"#))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "wrong token");
 
-    // A valid save: containerTag org:7:user:99 scopes to actor user:99.
+    // Search finds the seeded memory.
     let resp = app(state.clone())
-        .oneshot(post(
-            Some("sk-test"),
-            r#"{"content":"the user loves climbing","containerTag":"org:7:user:99","customId":"m1"}"#,
-        ))
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"climbing","containerTag":"org:7:user:99"}"#))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
-    assert_eq!(j["status"], "saved");
-    assert_eq!(j["containerTag"], "org:7:user:99", "echoes the caller's tag");
+    assert_eq!(j["containerTag"], "org:7:user:99", "echoes the tag");
+    let results = j["results"].as_array().unwrap();
+    let memories: Vec<&str> = results.iter().filter_map(|r| r["memory"].as_str()).collect();
+    assert!(memories.contains(&"the user loves climbing"), "search returns the memory, got {memories:?}");
+    assert!(results.iter().all(|r| r["similarity"].is_number()), "each result carries a similarity score");
 
-    let hits = engine.recall(tenant, "user:99", "climbing", 10).await.unwrap();
-    assert!(
-        hits.iter().any(|h| h.content.as_deref() == Some("the user loves climbing")),
-        "memory stored under the parsed actor"
-    );
-
-    // Same customId is an idempotent skip.
+    // Plural containerTags (single-element) is accepted as the same scope.
     let resp = app(state.clone())
-        .oneshot(post(
-            Some("sk-test"),
-            r#"{"content":"the user loves climbing","containerTag":"org:7:user:99","customId":"m1"}"#,
-        ))
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"climbing","containerTags":["org:7:user:99"]}"#))
         .await
         .unwrap();
-    let j = body_json(resp).await;
-    assert_eq!(j["status"], "skipped", "repeat customId is skipped");
+    assert_eq!(resp.status(), StatusCode::OK, "plural containerTags accepted");
 
-    // Plural containerTags is accepted as the same scope shape.
+    // An empty query is rejected, and a bad limit is clamped (not a 500).
     let resp = app(state.clone())
-        .oneshot(post(
-            Some("sk-test"),
-            r#"{"content":"the user enjoys jazz","containerTags":["user:99"],"customId":"m2"}"#,
-        ))
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"  ","containerTag":"org:7:user:99"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "empty q rejected");
+    let resp = app(state.clone())
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"climbing","containerTag":"org:7:user:99","limit":-5}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "negative limit is clamped, not a 500");
+
+    // Profile returns the actor's profile; a query also returns relevant memories.
+    let resp = app(state.clone())
+        .oneshot(post("/v4/profile", "sk-test", r#"{"containerTag":"org:7:user:99","q":"climbing"}"#))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
-    assert_eq!(j["status"], "saved");
-    assert_eq!(j["containerTag"], "user:99", "echoes the resolved tag");
+    assert!(j["profile"]["dynamicCtx"].is_array(), "profile body present");
+    let rel: Vec<&str> = j["results"].as_array().unwrap().iter().filter_map(|r| r["memory"].as_str()).collect();
+    assert!(rel.contains(&"the user loves climbing"), "profile query returns relevant memory");
 
-    // Empty content is a 400.
+    // Read endpoints also require auth.
     let resp = app(state)
-        .oneshot(post(Some("sk-test"), r#"{"content":"   ","containerTag":"alice"}"#))
+        .oneshot(post("/v4/search", "nope", r#"{"q":"x","containerTag":"alice"}"#))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

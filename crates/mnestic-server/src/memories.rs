@@ -11,13 +11,16 @@ use serde::{Deserialize, Serialize};
 use crate::auth::authenticate;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
-use crate::AppState;
+use crate::{resolve_container_tag, AppState};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddMemoryRequest {
     pub content: String,
-    pub container_tag: String,
+    #[serde(default)]
+    pub container_tag: Option<String>,
+    #[serde(default)]
+    pub container_tags: Option<Vec<String>>,
     #[serde(default)]
     pub custom_id: Option<String>,
 }
@@ -44,7 +47,8 @@ pub async fn add_memory(
     if req.content.trim().is_empty() {
         return Err(ApiError::BadRequest("content is empty".into()));
     }
-    let Scope { actor_id, container_tags } = parse_container_tag(&req.container_tag);
+    let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
+    let Scope { actor_id, container_tags } = parse_container_tag(&tag);
 
     let result = state
         .engine
@@ -61,7 +65,7 @@ pub async fn add_memory(
     let status = if result.idempotent_skip { "skipped" } else { "saved" };
     Ok(Json(AddMemoryResponse {
         id: result.source_id.to_string(),
-        container_tag: req.container_tag,
+        container_tag: tag,
         status: status.to_string(),
     }))
 }
