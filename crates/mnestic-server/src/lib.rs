@@ -15,6 +15,7 @@ pub mod auth;
 pub mod container_tag;
 mod documents;
 pub mod error;
+mod mcp;
 mod memories;
 mod memory_tool;
 mod query;
@@ -39,6 +40,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v4/profile", post(query::profile))
         .route("/v3/documents", post(documents::ingest_document))
         .route("/v3/search", post(documents::search_documents))
+        .route("/mcp", post(mcp::mcp))
         // Bound the body so a single request cannot push a huge extract/embed job.
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
