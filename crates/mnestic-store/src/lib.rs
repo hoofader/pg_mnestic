@@ -870,3 +870,34 @@ async fn set_tenant(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATOR;
+
+    // The assertion below pins the SHA-384 of every shipped migration as it was embedded at
+    // build time. sqlx re-checks that same checksum against _sqlx_migrations on every start,
+    // so an in-place edit of a file a database already ran makes run_migrations refuse to
+    // boot. This test turns that runtime failure into a compile-time tripwire: once a
+    // migration ships, append its (version, sha384) here and make changes in a NEW file.
+    // See MIGRATIONS.md.
+    const FROZEN: &[(i64, &str)] = &[(
+        1,
+        "36e381dad2f9d73367beb12d8f045dbed9d3c2a8aadf9241404e04d53c22d3532e138d675fab1b39e7c3eda100f2a2b4",
+    )];
+
+    #[test]
+    fn shipped_migrations_are_frozen() {
+        for &(version, expected) in FROZEN {
+            let m = MIGRATOR
+                .iter()
+                .find(|m| m.version == version)
+                .unwrap_or_else(|| panic!("migration {version:04} present in the embedded set"));
+            let hex: String = m.checksum.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(
+                hex, expected,
+                "migration {version:04} changed; shipped migrations are append-only (see MIGRATIONS.md)"
+            );
+        }
+    }
+}
