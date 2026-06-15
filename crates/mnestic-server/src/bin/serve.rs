@@ -3,7 +3,7 @@
 //! Runnable supermemory-compatible server. Build with `--features serve`.
 //! Env: DATABASE_URL, OPENAI_API_KEY (embeddings), ANTHROPIC_API_KEY (extraction),
 //! MNESTIC_BIND (default 127.0.0.1:8080; set 0.0.0.0:8080 to expose). Provision a key with
-//! `INSERT INTO mnestic_api_key (token_sha256, tenant_id) VALUES (digest('<token>','sha256'), '<tenant>')`.
+//! the issue-key binary: `cargo run -p mnestic-server --features cli --bin issue-key -- <tenant>`.
 
 use std::sync::Arc;
 

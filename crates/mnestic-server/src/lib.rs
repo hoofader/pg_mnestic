@@ -13,6 +13,7 @@ use mnestic_engine::Engine;
 
 pub mod auth;
 pub mod container_tag;
+pub mod keys;
 mod directory;
 mod documents;
 pub mod error;
