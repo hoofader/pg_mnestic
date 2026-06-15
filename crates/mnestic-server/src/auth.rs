@@ -16,7 +16,8 @@ use crate::error::ApiError;
 pub async fn authenticate(pool: &PgPool, headers: &HeaderMap) -> Result<Uuid, ApiError> {
     let token = bearer_token(headers).ok_or(ApiError::Unauthorized)?;
     let tenant: Option<Uuid> = sqlx::query_scalar(
-        "SELECT tenant_id FROM mnestic_api_key WHERE token_sha256 = digest($1, 'sha256')",
+        "SELECT tenant_id FROM mnestic_api_key \
+         WHERE token_sha256 = digest($1, 'sha256') AND revoked_at IS NULL",
     )
     .bind(token)
     .fetch_optional(pool)

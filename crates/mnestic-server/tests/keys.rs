@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::http::{header, HeaderMap, HeaderValue};
 use mnestic_server::auth::authenticate;
-use mnestic_server::keys::issue_key;
+use mnestic_server::keys::{issue_key, list_keys, revoke_key_by_digest, revoke_key_by_token};
 use mnestic_store::run_migrations;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use testcontainers::core::{IntoContainerPort, WaitFor};
@@ -61,7 +61,7 @@ async fn issued_key_authenticates_to_its_tenant() {
     run_migrations(&pool).await.expect("migrations");
 
     // A fresh tenant gets a token that the shells will accept and that auth resolves back.
-    let first = issue_key(&pool, "acme").await.expect("issue first key");
+    let first = issue_key(&pool, "acme", Some("ci")).await.expect("issue first key");
     assert!(first.token.starts_with("sm_"), "sm_ prefix required, got {}", first.token);
     assert_eq!(first.token.len(), 3 + 48, "sm_ plus 24 bytes of hex");
     let resolved = authenticate(&pool, &bearer(&first.token)).await.expect("authenticate");
@@ -78,7 +78,7 @@ async fn issued_key_authenticates_to_its_tenant() {
 
     // Re-issuing for the same external id reuses the tenant and mints a distinct token, so a
     // key can be rotated without disturbing the tenant or its data. Both keys stay valid.
-    let second = issue_key(&pool, "acme").await.expect("issue second key");
+    let second = issue_key(&pool, "acme", None).await.expect("issue second key");
     assert_eq!(second.tenant_id, first.tenant_id, "same tenant on re-issue");
     assert_ne!(second.token, first.token, "a new token each time");
     let resolved2 = authenticate(&pool, &bearer(&second.token)).await.expect("authenticate second");
@@ -91,7 +91,7 @@ async fn issued_key_authenticates_to_its_tenant() {
     );
 
     // A different external id is a different tenant (the isolation boundary).
-    let other = issue_key(&pool, "globex").await.expect("issue other tenant");
+    let other = issue_key(&pool, "globex", None).await.expect("issue other tenant");
     assert_ne!(other.tenant_id, first.tenant_id, "distinct tenants");
 
     // An unknown token is rejected.
@@ -99,4 +99,42 @@ async fn issued_key_authenticates_to_its_tenant() {
         authenticate(&pool, &bearer("sm_deadbeef")).await.is_err(),
         "unknown token rejected"
     );
+
+    // The listing shows both of the tenant's keys, with the label that was set.
+    let listed = list_keys(&pool, "acme").await.expect("list acme keys");
+    assert_eq!(listed.len(), 2, "two keys for acme");
+    assert!(listed.iter().any(|k| k.label.as_deref() == Some("ci")), "label round-trips");
+    assert!(listed.iter().all(|k| k.revoked_at.is_none()), "both active before revocation");
+
+    // Revoke the first key by its hex digest; auth must reject it while the second still works.
+    let first_digest = listed
+        .iter()
+        .find(|k| k.label.as_deref() == Some("ci"))
+        .expect("first key in listing")
+        .digest_hex
+        .clone();
+    assert!(revoke_key_by_digest(&pool, &first_digest).await.expect("revoke"), "revoked");
+    assert!(
+        authenticate(&pool, &bearer(&first.token)).await.is_err(),
+        "revoked key no longer authenticates"
+    );
+    assert_eq!(
+        authenticate(&pool, &bearer(&second.token)).await.expect("second still valid"),
+        first.tenant_id,
+        "revoking one key does not affect another"
+    );
+
+    // Revocation is idempotent: a second revoke of the same key reports no change.
+    assert!(!revoke_key_by_digest(&pool, &first_digest).await.expect("re-revoke"), "already revoked");
+
+    // Revoking by cleartext token works for the operator who still holds it.
+    assert!(revoke_key_by_token(&pool, &second.token).await.expect("revoke by token"), "revoked");
+    assert!(
+        authenticate(&pool, &bearer(&second.token)).await.is_err(),
+        "token-revoked key no longer authenticates"
+    );
+
+    // The listing reflects the revocations.
+    let after = list_keys(&pool, "acme").await.expect("list after revoke");
+    assert!(after.iter().all(|k| k.revoked_at.is_some()), "both acme keys now revoked");
 }

@@ -881,10 +881,16 @@ mod tests {
     // boot. This test turns that runtime failure into a compile-time tripwire: once a
     // migration ships, append its (version, sha384) here and make changes in a NEW file.
     // See MIGRATIONS.md.
-    const FROZEN: &[(i64, &str)] = &[(
-        1,
-        "36e381dad2f9d73367beb12d8f045dbed9d3c2a8aadf9241404e04d53c22d3532e138d675fab1b39e7c3eda100f2a2b4",
-    )];
+    const FROZEN: &[(i64, &str)] = &[
+        (
+            1,
+            "36e381dad2f9d73367beb12d8f045dbed9d3c2a8aadf9241404e04d53c22d3532e138d675fab1b39e7c3eda100f2a2b4",
+        ),
+        (
+            2,
+            "9cfe123f3469bdc2a878125c22f3d8ae2a712b2fd8568b3000dd224bf570fb3eb6f6a9bfafeef0286a2577fc269dce9c",
+        ),
+    ];
 
     #[test]
     fn shipped_migrations_are_frozen() {

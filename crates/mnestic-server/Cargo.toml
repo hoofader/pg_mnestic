@@ -41,3 +41,11 @@ required-features = ["serve"]
 [[bin]]
 name = "issue-key"
 required-features = ["cli"]
+
+[[bin]]
+name = "list-keys"
+required-features = ["cli"]
+
+[[bin]]
+name = "revoke-key"
+required-features = ["cli"]
