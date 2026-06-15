@@ -188,6 +188,31 @@ async fn mcp_handshake_and_tools() {
     let titles: Vec<&str> = sc["documents"].as_array().unwrap().iter().filter_map(|d| d["title"].as_str()).collect();
     assert!(titles.contains(&"Notes"), "document title in structuredContent, got {titles:?}");
 
+    // resources/list advertises the projects resource.
+    let resp = app(state.clone())
+        .oneshot(rpc(Some("sk-test"), r#"{"jsonrpc":"2.0","id":7,"method":"resources/list"}"#))
+        .await
+        .unwrap();
+    let uris: Vec<String> = body_json(resp).await["result"]["resources"]
+        .as_array().unwrap().iter().filter_map(|r| r["uri"].as_str().map(str::to_string)).collect();
+    assert!(uris.iter().any(|u| u == "supermemory://projects"), "projects resource listed, got {uris:?}");
+
+    // resources/read of a profile template instance returns the actor's profile markdown.
+    let resp = app(state.clone())
+        .oneshot(rpc(Some("sk-test"), r#"{"jsonrpc":"2.0","id":8,"method":"resources/read","params":{"uri":"supermemory://profile/user:9"}}"#))
+        .await
+        .unwrap();
+    let text = body_json(resp).await["result"]["contents"][0]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("climbing"), "profile resource carries the memory, got {text}");
+
+    // The context prompt returns the profile as a message.
+    let resp = app(state.clone())
+        .oneshot(rpc(Some("sk-test"), r#"{"jsonrpc":"2.0","id":9,"method":"prompts/get","params":{"name":"context","arguments":{"containerTag":"user:9"}}}"#))
+        .await
+        .unwrap();
+    let text = body_json(resp).await["result"]["messages"][0]["content"]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("climbing"), "context prompt carries the profile, got {text}");
+
     // Unknown method is a JSON-RPC error.
     let resp = app(state)
         .oneshot(rpc(Some("sk-test"), r#"{"jsonrpc":"2.0","id":5,"method":"bogus/method"}"#))

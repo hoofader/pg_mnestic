@@ -4,13 +4,16 @@
 //! clients (Claude Desktop, Cursor) drive Mnestic with the same tool names as the
 //! supermemory MCP server. Streamable HTTP in its simplest form: each request gets a
 //! JSON response (no SSE, which tools do not need); a notification gets 202 and no body.
-//! Implements the two substantive tools, `memory` (save/forget) and `recall`. The
-//! resources, prompt, and the `listProjects`/`whoAmI`/`memory-graph` tools are deferred.
+//! Tools: `memory` (save/forget), `recall`, `listProjects`, `whoAmI`, `memory-graph`.
+//! Resources: `supermemory://projects` and the `supermemory://profile/{containerTag}`
+//! template. Prompt: `context`. The profile resource and the prompt are scoped by the
+//! containerTag in the URI/argument, since a bare resource has no actor otherwise.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use mnestic_engine::Profile;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -50,6 +53,11 @@ async fn handle(state: &AppState, tenant: Uuid, msg: &Value) -> Option<Value> {
         "tools/list" => Ok(tools_list()),
         "ping" => Ok(json!({})),
         "tools/call" => call_tool(state, tenant, msg.get("params")).await,
+        "resources/list" => Ok(resources_list()),
+        "resources/templates/list" => Ok(resource_templates_list()),
+        "resources/read" => read_resource(state, tenant, msg.get("params")).await,
+        "prompts/list" => Ok(prompts_list()),
+        "prompts/get" => get_prompt(state, tenant, msg.get("params")).await,
         other => Err((-32601, format!("method not found: {other}"))),
     };
     Some(match outcome {
@@ -70,7 +78,7 @@ fn initialize_result(params: Option<&Value>) -> Value {
     };
     json!({
         "protocolVersion": version,
-        "capabilities": { "tools": {} },
+        "capabilities": { "tools": {}, "resources": {}, "prompts": {} },
         "serverInfo": { "name": "mnestic", "version": env!("CARGO_PKG_VERSION") }
     })
 }
@@ -226,6 +234,97 @@ async fn recall_tool(state: &AppState, tenant: Uuid, args: &Value) -> Result<Str
         out["profile"] = json!({ "staticFacts": p.static_facts, "dynamicCtx": p.dynamic_ctx });
     }
     Ok(out.to_string())
+}
+
+fn internal(e: impl std::fmt::Display) -> (i64, String) {
+    eprintln!("mnestic-server mcp error: {e}");
+    (-32603, "internal error".to_string())
+}
+
+fn profile_markdown(p: &Profile) -> String {
+    let mut s = String::from("# Memory profile\n");
+    if !p.static_facts.is_empty() {
+        s.push_str("\n## Durable facts\n");
+        for f in &p.static_facts {
+            s.push_str("- ");
+            s.push_str(f);
+            s.push('\n');
+        }
+    }
+    if !p.dynamic_ctx.is_empty() {
+        s.push_str("\n## Recent context\n");
+        for c in &p.dynamic_ctx {
+            s.push_str("- ");
+            s.push_str(c);
+            s.push('\n');
+        }
+    }
+    s
+}
+
+fn resources_list() -> Value {
+    json!({ "resources": [
+        { "uri": "supermemory://projects", "name": "projects",
+          "description": "Container tags in use, as JSON.", "mimeType": "application/json" }
+    ]})
+}
+
+fn resource_templates_list() -> Value {
+    json!({ "resourceTemplates": [
+        { "uriTemplate": "supermemory://profile/{containerTag}", "name": "profile",
+          "description": "Markdown memory profile for a container.", "mimeType": "text/markdown" }
+    ]})
+}
+
+async fn read_resource(state: &AppState, tenant: Uuid, params: Option<&Value>) -> Result<Value, (i64, String)> {
+    let uri = params
+        .and_then(|p| p.get("uri"))
+        .and_then(Value::as_str)
+        .ok_or((-32602, "missing uri".to_string()))?;
+    if uri == "supermemory://projects" {
+        let tags = state.engine.store().list_container_tags(tenant).await.map_err(internal)?;
+        return Ok(json!({ "contents": [{
+            "uri": uri, "mimeType": "application/json", "text": json!(tags).to_string()
+        }]}));
+    }
+    if let Some(raw) = uri.strip_prefix("supermemory://profile/") {
+        let tag = resolve_container_tag(Some(raw.to_string()), None)
+            .map_err(|_| (-32602, "invalid containerTag in uri".to_string()))?;
+        let Scope { actor_id, .. } = parse_container_tag(&tag);
+        let profile = state.engine.profile(tenant, &actor_id).await.map_err(internal)?;
+        return Ok(json!({ "contents": [{
+            "uri": uri, "mimeType": "text/markdown", "text": profile_markdown(&profile)
+        }]}));
+    }
+    Err((-32602, format!("unknown resource: {uri}")))
+}
+
+fn prompts_list() -> Value {
+    json!({ "prompts": [
+        { "name": "context", "description": "Injects the user's memory profile as a message.",
+          "arguments": [{ "name": "containerTag", "description": "Which container's profile.", "required": true }] }
+    ]})
+}
+
+async fn get_prompt(state: &AppState, tenant: Uuid, params: Option<&Value>) -> Result<Value, (i64, String)> {
+    let params = params.ok_or((-32602, "missing params".to_string()))?;
+    let name = params.get("name").and_then(Value::as_str).ok_or((-32602, "missing prompt name".to_string()))?;
+    if name != "context" {
+        return Err((-32602, format!("unknown prompt: {name}")));
+    }
+    let raw = params
+        .get("arguments")
+        .and_then(|a| a.get("containerTag"))
+        .and_then(Value::as_str)
+        .ok_or((-32602, "context requires a containerTag argument".to_string()))?;
+    let tag = resolve_container_tag(Some(raw.to_string()), None)
+        .map_err(|_| (-32602, "invalid containerTag".to_string()))?;
+    let Scope { actor_id, .. } = parse_container_tag(&tag);
+    let profile = state.engine.profile(tenant, &actor_id).await.map_err(internal)?;
+    Ok(json!({
+        "description": "The user's memory profile as context.",
+        "messages": [{ "role": "user", "content": { "type": "text", "text": profile_markdown(&profile) } }]
+    }))
 }
 
 async fn list_projects_tool(state: &AppState, tenant: Uuid) -> Result<String, String> {
