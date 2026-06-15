@@ -164,9 +164,19 @@ impl Engine {
         } else {
             limit
         };
+        // as_of is None: live recall decays toward now(). The store carries the as-of
+        // capability for time-travel reads; no caller threads a past instant yet.
         let mut hits = self
             .store
-            .recall_memories(tenant_id, actor_id, &qvec, &retrieval_query, container_tags, pool)
+            .recall_memories(mnestic_store::RecallParams {
+                tenant_id,
+                actor_id,
+                query_embedding: &qvec,
+                query_text: &retrieval_query,
+                container_tags,
+                limit: pool,
+                as_of: None,
+            })
             .await?;
 
         if let Some(reranker) = &self.reranker {

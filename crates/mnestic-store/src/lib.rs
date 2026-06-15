@@ -55,6 +55,19 @@ pub struct Profile {
     pub refreshed_at: Option<DateTime<Utc>>,
 }
 
+/// Inputs to hybrid recall, bundled so `recall_memories` stays under the argument-count lint.
+pub struct RecallParams<'a> {
+    pub tenant_id: Uuid,
+    pub actor_id: &'a str,
+    pub query_embedding: &'a [f32],
+    pub query_text: &'a str,
+    pub container_tags: &'a [String],
+    pub limit: i64,
+    /// Reference instant for recency decay. None means now(); a past value answers "as of
+    /// then" (a fact whose event time is near `as_of` ranks as recent).
+    pub as_of: Option<DateTime<Utc>>,
+}
+
 /// One ranked memory returned by hybrid recall.
 #[derive(Debug, Clone)]
 pub struct RecallHit {
@@ -497,18 +510,24 @@ impl Store {
 
     /// Hybrid recall over the actor's latest active memories: vector similarity and
     /// lexical (tsvector) relevance fused with reciprocal-rank fusion, then weighted
-    /// by recency decay and confidence (LLD §5.4). Superseded, non-latest, and
-    /// time-expired rows are excluded. This uses the tsvector floor; the pg_search
-    /// BM25 path swaps the lexical CTE where the extension is available.
-    pub async fn recall_memories(
-        &self,
-        tenant_id: Uuid,
-        actor_id: &str,
-        query_embedding: &[f32],
-        query_text: &str,
-        container_tags: &[String],
-        limit: i64,
-    ) -> Result<Vec<RecallHit>> {
+    /// by recency decay and confidence (LLD §5.4). Recency is an exponential decay on event
+    /// time (`valid_time`'s start, so a backfilled fact ages from when it was true, not from
+    /// when it was ingested) relative to `as_of`, with a 30-day time constant (half-life
+    /// about 21 days). A fact whose event is still ahead of `as_of` is clamped to maximum
+    /// recency rather than excluded, so for a past `as_of` not-yet-valid facts surface at
+    /// full recency (filtering them out instead is a future option). Superseded, non-latest,
+    /// and time-expired rows are excluded. This uses the tsvector floor; the pg_search BM25
+    /// path swaps the lexical CTE where the extension is available.
+    pub async fn recall_memories(&self, p: RecallParams<'_>) -> Result<Vec<RecallHit>> {
+        let RecallParams {
+            tenant_id,
+            actor_id,
+            query_embedding,
+            query_text,
+            container_tags,
+            limit,
+            as_of,
+        } = p;
         let qvec = vec_literal(query_embedding);
         let mut tx = self.begin_tenant(tenant_id).await?;
         // The container filter is a residual predicate on the HNSW top-k, so without
@@ -527,6 +546,7 @@ impl Store {
             .bind(actor_id)
             .bind(limit)
             .bind(container_tags)
+            .bind(as_of)
             .fetch_all(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -900,7 +920,7 @@ fused AS ( \
 SELECT m.id, m.content, m.subject, m.attribute, m.value, m.confidence, \
        lower(m.recorded_time) AS recorded_at, \
        (f.rrf \
-        * exp(-extract(epoch FROM (now() - lower(m.recorded_time))) / 2592000.0) \
+        * exp(-greatest(0, extract(epoch FROM (coalesce($7, now()) - lower(m.valid_time)))) / 2592000.0) \
         * (0.5 + 0.5 * m.confidence))::float8 AS score \
 FROM fused f JOIN mnestic_memory m ON m.id = f.id \
 ORDER BY score DESC, recorded_at DESC NULLS LAST, m.id \
