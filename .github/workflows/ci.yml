@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to match rust-toolchain.toml; bump both together so a new clippy release can't
+      # fail -D warnings on an unrelated change.
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # All features so the feature-gated provider, serve, and CLI code is checked too.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      # The integration tests start a throwaway pgvector container via testcontainers, so this
+      # job depends on the ubuntu runner's preinstalled, running Docker daemon. The live
+      # provider tests are #[ignore], so no API keys are needed.
+      - run: cargo test --workspace

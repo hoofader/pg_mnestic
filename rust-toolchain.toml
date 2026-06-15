@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# Pinned so CI and local builds use the same compiler and a new clippy release can't turn
+# `-D warnings` red on an unrelated change. Bump deliberately, in lockstep with .github/workflows/ci.yml.
+channel = "1.90.0"
 components = ["rustfmt", "clippy"]
