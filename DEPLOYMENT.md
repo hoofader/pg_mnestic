@@ -101,6 +101,17 @@ periodic base backups.
 - After restoring a backup, re-apply any erasures (`purge-actor`) that were honored after the
   backup was taken, or the restore silently reintroduces deleted data.
 
+## Process lifecycle and tuning
+
+- `MNESTIC_DB_MAX_CONNECTIONS` sizes the Postgres pool (default 16). Size it to the database's
+  connection budget across all server replicas, not to request rate; a pooled connection that
+  can't be acquired within 10s fails the request rather than hanging it.
+- On `SIGTERM` (the orchestrator's stop signal) or `SIGINT`, the server stops accepting new
+  connections and drains in-flight requests before exiting. There is no internal drain
+  deadline yet, so the orchestrator's termination grace period is the only bound: set it above
+  the longest expected request (extraction/embedding can take seconds) so a rolling deploy
+  doesn't cut a request short, but keep it finite so a stuck request can't block the rollout.
+
 ## Notes
 
 - In-process TLS (rustls in the app) is intentionally out of scope. Terminating at the edge

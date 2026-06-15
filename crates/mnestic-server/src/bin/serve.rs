@@ -8,9 +8,12 @@
 //! Provision a key with the issue-key binary:
 //! `cargo run -p mnestic-server --features cli --bin issue-key -- <tenant>`.
 //! Logs: RUST_LOG sets levels (default `info`); set MNESTIC_LOG_FORMAT=json for structured
-//! output to ship to a log aggregator.
+//! output to ship to a log aggregator. MNESTIC_DB_MAX_CONNECTIONS sizes the Postgres pool
+//! (default 16). On SIGTERM/SIGINT the server stops accepting connections and drains
+//! in-flight requests before exiting.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use mnestic_core::{Embedder, Extractor};
 use mnestic_engine::Engine;
@@ -46,7 +49,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fail fast rather than expose plaintext bearer tokens on a public socket.
     mnestic_server::check_bind_safety(&bind, trust_proxy)?;
 
-    let pool = PgPoolOptions::new().max_connections(8).connect(&dsn).await?;
+    let max_conns = mnestic_server::db_max_connections(
+        std::env::var("MNESTIC_DB_MAX_CONNECTIONS").ok().as_deref(),
+    );
+    let pool = PgPoolOptions::new()
+        .max_connections(max_conns)
+        // Fail a request that can't get a connection rather than hang it indefinitely when
+        // the pool is saturated.
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&dsn)
+        .await?;
     run_migrations(&pool).await?;
 
     let embedder: Arc<dyn Embedder> =
@@ -55,7 +67,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Arc::new(Engine::new(Store::new(pool), embedder, extractor));
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    tracing::info!(%bind, "mnestic-server listening");
-    axum::serve(listener, app(AppState { engine })).await?;
+    tracing::info!(%bind, max_connections = max_conns, "mnestic-server listening");
+    axum::serve(listener, app(AppState { engine }))
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("mnestic-server stopped");
     Ok(())
+}
+
+/// Resolve when the process receives SIGTERM (the orchestrator's stop signal) or SIGINT
+/// (ctrl-c). axum then stops accepting new connections and waits for in-flight requests to
+/// finish before `serve` returns.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("install ctrl-c handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutdown signal received, draining in-flight requests");
 }

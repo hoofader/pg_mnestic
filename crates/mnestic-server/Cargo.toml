@@ -25,8 +25,8 @@ mnestic-engine = { workspace = true }
 mnestic-store = { workspace = true }
 mnestic-model = { workspace = true, optional = true }
 axum = "0.7"
-# `net` (on top of the workspace base) is for the binary's TcpListener.
-tokio = { workspace = true, features = ["net"] }
+# `net` (TcpListener) and `signal` (graceful-shutdown SIGTERM/SIGINT) for the binary.
+tokio = { workspace = true, features = ["net", "signal"] }
 sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

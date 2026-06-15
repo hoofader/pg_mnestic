@@ -92,6 +92,18 @@ pub fn check_bind_safety(bind: &str, trust_proxy: bool) -> Result<(), String> {
     }
 }
 
+/// Default Postgres pool size when `MNESTIC_DB_MAX_CONNECTIONS` is unset.
+const DEFAULT_DB_MAX_CONNECTIONS: u32 = 16;
+
+/// Pool size from the `MNESTIC_DB_MAX_CONNECTIONS` value. A missing, non-numeric, or zero
+/// value falls back to the default rather than failing startup on a typo. Size it to the
+/// database's connection budget, not the request rate.
+pub fn db_max_connections(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_DB_MAX_CONNECTIONS)
+}
+
 /// Recall fan-out default and cap. Clamping a client value keeps it out of a negative
 /// SQL `LIMIT` (a 500) and bounds how large a single query can get.
 const DEFAULT_LIMIT: i64 = 10;
@@ -175,5 +187,15 @@ mod tests {
         assert!(check_bind_safety("0.0.0.0:8080", true).is_ok());
         // A non-address is a clear error, not a silent pass-through.
         assert!(check_bind_safety("localhost:8080", false).is_err());
+    }
+
+    #[test]
+    fn db_max_connections_parses_or_defaults() {
+        assert_eq!(db_max_connections(Some("32")), 32);
+        assert_eq!(db_max_connections(Some("  8 ")), 8);
+        // Missing, non-numeric, and zero all fall back to the default, never panic or 0.
+        assert_eq!(db_max_connections(None), super::DEFAULT_DB_MAX_CONNECTIONS);
+        assert_eq!(db_max_connections(Some("lots")), super::DEFAULT_DB_MAX_CONNECTIONS);
+        assert_eq!(db_max_connections(Some("0")), super::DEFAULT_DB_MAX_CONNECTIONS);
     }
 }
