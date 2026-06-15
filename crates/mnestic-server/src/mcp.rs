@@ -113,6 +113,11 @@ fn tools_list() -> Value {
             "name": "whoAmI",
             "description": "Return the authenticated user (userId, email, name).",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "memory-graph",
+            "description": "Summary of the actor's documents with their ids and titles.",
+            "inputSchema": { "type": "object", "properties": { "containerTag": { "type": "string" } } }
         }
     ]})
 }
@@ -125,6 +130,16 @@ async fn call_tool(state: &AppState, tenant: Uuid, params: Option<&Value>) -> Re
     let name = params.get("name").and_then(Value::as_str).ok_or((-32602, "missing tool name".to_string()))?;
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
+    // memory-graph also returns structuredContent (a sibling of content, per the MCP
+    // spec), so it is built specially rather than as a plain text result.
+    if name == "memory-graph" {
+        return Ok(match memory_graph_tool(state, tenant, &args).await {
+            Ok((summary, structured)) => {
+                json!({ "content": [{ "type": "text", "text": summary }], "structuredContent": structured })
+            }
+            Err(message) => json!({ "content": [{ "type": "text", "text": message }], "isError": true }),
+        });
+    }
     let outcome = match name {
         "memory" => memory_tool(state, tenant, &args).await,
         "recall" => recall_tool(state, tenant, &args).await,
@@ -221,4 +236,22 @@ async fn list_projects_tool(state: &AppState, tenant: Uuid) -> Result<String, St
 async fn who_am_i_tool(state: &AppState, tenant: Uuid) -> Result<String, String> {
     let user_id = state.engine.store().tenant_external_id(tenant).await.map_err(scrub)?.unwrap_or_default();
     Ok(json!({ "userId": user_id, "email": Value::Null, "name": Value::Null }).to_string())
+}
+
+/// Returns (summary text, structuredContent). Actor-wide on purpose: a memory-graph is
+/// the user's whole document set, so the container tags inside the containerTag are not
+/// used to filter it (unlike recall).
+async fn memory_graph_tool(state: &AppState, tenant: Uuid, args: &Value) -> Result<(String, Value), String> {
+    let tag = tag_from_args(args)?;
+    let Scope { actor_id, .. } = parse_container_tag(&tag);
+    let docs = state.engine.store().list_documents(tenant, &actor_id).await.map_err(scrub)?;
+    let documents: Vec<Value> = docs
+        .iter()
+        .map(|(id, title)| json!({ "id": id.to_string(), "title": title }))
+        .collect();
+    let total = documents.len();
+    Ok((
+        format!("{total} document(s)"),
+        json!({ "documents": documents, "totalCount": total }),
+    ))
 }

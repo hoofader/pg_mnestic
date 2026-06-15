@@ -88,7 +88,7 @@ async fn mcp_handshake_and_tools() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine };
+    let state = AppState { engine: engine.clone() };
 
     // No token is rejected.
     let resp = app(state.clone())
@@ -168,6 +168,25 @@ async fn mcp_handshake_and_tools() {
     let text = j["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("climbing"), "recall returns the memory, got {text}");
     assert!(text.contains("profile"), "includeProfile defaults true");
+
+    // memory-graph lists the actor's documents.
+    engine
+        .ingest_document(tenant, "user:9", &[], Some("Notes"), None, "some reference document content", Some("d1"))
+        .await
+        .unwrap();
+    let resp = app(state.clone())
+        .oneshot(rpc(
+            Some("sk-test"),
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"memory-graph","arguments":{"containerTag":"user:9"}}}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert!(j["result"]["content"][0]["text"].as_str().unwrap().contains("document"), "summary text present");
+    let sc = &j["result"]["structuredContent"];
+    assert_eq!(sc["totalCount"], 1, "structuredContent totalCount");
+    let titles: Vec<&str> = sc["documents"].as_array().unwrap().iter().filter_map(|d| d["title"].as_str()).collect();
+    assert!(titles.contains(&"Notes"), "document title in structuredContent, got {titles:?}");
 
     // Unknown method is a JSON-RPC error.
     let resp = app(state)

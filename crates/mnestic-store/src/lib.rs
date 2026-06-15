@@ -708,6 +708,25 @@ impl Store {
         tx.commit().await?;
         Ok(tags)
     }
+
+    /// An actor's documents (id, title) for the memory-graph view, newest first.
+    pub async fn list_documents(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+    ) -> Result<Vec<(Uuid, Option<String>)>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, title FROM mnestic_document \
+             WHERE tenant_id = $1 AND actor_id = $2 ORDER BY created_at DESC",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows.into_iter().map(|r| (r.get("id"), r.get("title"))).collect())
+    }
 }
 
 // Static facts are durable and high-confidence (is_static or confidence >= the
