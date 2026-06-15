@@ -120,6 +120,32 @@ periodic base backups.
   the longest expected request (extraction/embedding can take seconds) so a rolling deploy
   doesn't cut a request short, but keep it finite so a stuck request can't block the rollout.
 
+## Scaling pgvector
+
+Recall uses an HNSW index over the `halfvec(1536)` embeddings. The knobs that matter as the
+data grows:
+
+- **`hnsw.ef_search`** (default 40) trades recall for latency: higher widens the search and
+  finds more of the true nearest neighbors, slower. The server does not set it per query, so
+  set it on the role the app connects as and it applies to every recall:
+  `ALTER ROLE <app_role> SET hnsw.ef_search = 100;`. Raise it if recall quality matters more
+  than latency at your scale; measure with the request-latency logs.
+- **Container-filtered recall** already turns on `hnsw.iterative_scan = 'relaxed_order'` per
+  query: the `container_tags` filter is a residual predicate on the HNSW top-k, so without
+  iterative scan a selective filter can return fewer than the requested limit while matching
+  rows sit deeper in the index. The final ranking re-sorts, so the looser scan order is fine.
+  A very selective filter on a large corpus can still under-return when iterative scan hits
+  `hnsw.max_scan_tuples` (default 20,000); raise it (and `hnsw.scan_mem_multiplier`) at the
+  role level to trade latency for completeness.
+- **Index build parameters** (`m`, `ef_construction`) take pgvector's defaults: the `0001`
+  index DDL does not set them. For a very large corpus, a higher `m`/`ef_construction` improves
+  recall at the cost of build time and index size; changing them means a new migration that
+  rebuilds the index with `WITH (...)`, not a runtime setting. Raise `maintenance_work_mem` on
+  the session that builds or reindexes so the build stays in memory.
+- Keep planner statistics fresh (autovacuum on, or periodic `ANALYZE`) so the planner picks
+  good plans for the lexical (tsvector) and filtered (tenant/actor/container) paths as row
+  counts grow.
+
 ## Notes
 
 - In-process TLS (rustls in the app) is intentionally out of scope. Terminating at the edge
