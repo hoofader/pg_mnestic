@@ -101,6 +101,35 @@ periodic base backups.
 - After restoring a backup, re-apply any erasures (`purge-actor`) that were honored after the
   backup was taken, or the restore silently reintroduces deleted data.
 
+## Encryption at rest
+
+All persistent state is in Postgres, so encryption at rest is a database/storage-layer
+concern, not an application one. The application stores `content` in cleartext columns
+because recall searches it through a plaintext `tsvector` index and a semantic embedding;
+encrypting the column would either leak the content through those derived artifacts or make
+the row unsearchable. So encrypt the storage underneath the database:
+
+- **Managed Postgres** (RDS, Cloud SQL, Azure Database): encryption at rest is transparent and
+  KMS-backed. On Cloud SQL and Azure it is on by default; what you choose at creation is the
+  key (a customer-managed key for rotation and revocation control). On RDS, encryption itself
+  is set at instance creation and cannot be enabled in place, so create the instance encrypted
+  and migrate into it. A customer-managed key is an availability dependency: lose or revoke it
+  and the database becomes unreadable, so guard and back up the key, not just the data.
+- **Self-hosted**: put the data directory, WAL, and any tablespaces on an encrypted block
+  device (LUKS/dm-crypt) or filesystem. Community PostgreSQL has no built-in cluster TDE;
+  transparent encryption inside the database needs a TDE-enabled distribution (for example
+  EDB or Cybertec) if you require it there rather than under it.
+- **Backups and WAL**: encrypt them too. Managed snapshots inherit the instance's encryption;
+  `pg_dump` output and WAL archives must be written to encrypted storage. An unencrypted
+  backup undoes at-rest encryption.
+- **In transit** is separate and already required (see TLS above): the client to proxy and
+  proxy to app to database links should all be TLS.
+
+Application-level column encryption (the unused `content_enc`/`raw_enc` columns) is
+deliberately not used: it conflicts with hybrid search as described. It remains an option for
+a future, separate class of non-searchable sensitive memories, which would need a key strategy
+and would keep those rows out of recall.
+
 ## Process lifecycle and tuning
 
 - `MNESTIC_DB_MAX_CONNECTIONS` sizes the Postgres pool (default 16). Size it to the database's

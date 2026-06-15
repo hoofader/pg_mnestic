@@ -47,6 +47,7 @@ search `tsvector`) are dropped; they are derived data, not the subject's informa
 - Erasure and export are operator-run today, not a tenant self-service endpoint. A REST
   surface for them would need its own admin authorization, separate from the per-tenant
   bearer keys.
-- All content is cleartext today (the envelope-encryption columns are unused). If
-  encryption-at-rest is enabled later, the export carries those payloads as ciphertext the
-  subject cannot read; an intelligible export then needs a decrypt-on-export step.
+- Encryption at rest is handled at the storage/database layer (see DEPLOYMENT.md), so content
+  is cleartext within the database and the export is unaffected. Only the deferred
+  application-level column encryption would make the export carry ciphertext, and that would
+  then need a decrypt-on-export step.
