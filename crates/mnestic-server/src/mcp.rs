@@ -183,7 +183,14 @@ async fn recall_tool(state: &AppState, tenant: Uuid, args: &Value) -> Result<Str
         .map_err(scrub)?;
     let results: Vec<Value> = hits
         .iter()
-        .map(|h| json!({ "id": h.id.to_string(), "memory": h.content, "similarity": h.score }))
+        .map(|h| {
+            json!({
+                "id": h.id.to_string(),
+                "memory": h.content,
+                "similarity": h.score,
+                "updatedAt": h.recorded_at.map(|t| t.to_rfc3339()),
+            })
+        })
         .collect();
     let mut out = json!({ "results": results });
     // includeProfile defaults true (doc 04 §3).

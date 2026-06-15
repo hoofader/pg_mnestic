@@ -67,16 +67,56 @@ pub(crate) fn resolve_container_tag(
     singular: Option<String>,
     plural: Option<Vec<String>>,
 ) -> Result<String, error::ApiError> {
-    if let Some(t) = singular {
-        if !t.is_empty() {
-            return Ok(t);
+    let tag = match (singular, plural) {
+        (Some(t), _) if !t.is_empty() => t,
+        (_, Some(v)) if v.len() == 1 && !v[0].is_empty() => v.into_iter().next().unwrap(),
+        (_, Some(v)) if v.len() > 1 => {
+            return Err(error::ApiError::BadRequest("multiple containerTags is not supported yet".into()))
         }
+        _ => return Err(error::ApiError::BadRequest("containerTag is required".into())),
+    };
+    validate_container_tag(&tag)?;
+    Ok(tag)
+}
+
+/// Enforce supermemory's `containerTag` shape (`^[a-zA-Z0-9_:-]+$`, 1..=100) at the edge,
+/// so malformed input is a 400, not a confusing downstream actor/key.
+fn validate_container_tag(tag: &str) -> Result<(), error::ApiError> {
+    if tag.is_empty() || tag.chars().count() > 100 {
+        return Err(error::ApiError::BadRequest("containerTag must be 1 to 100 characters".into()));
     }
-    match plural {
-        Some(v) if v.len() == 1 && !v[0].is_empty() => Ok(v.into_iter().next().unwrap()),
-        Some(v) if v.len() > 1 => {
-            Err(error::ApiError::BadRequest("multiple containerTags is not supported yet".into()))
-        }
-        _ => Err(error::ApiError::BadRequest("containerTag is required".into())),
+    if !tag.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-')) {
+        return Err(error::ApiError::BadRequest(
+            "containerTag allows only letters, digits, '_', ':', '-'".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolve(s: Option<&str>, p: Option<Vec<&str>>) -> Result<String, error::ApiError> {
+        resolve_container_tag(
+            s.map(str::to_string),
+            p.map(|v| v.iter().map(|x| x.to_string()).collect()),
+        )
+    }
+
+    #[test]
+    fn resolve_accepts_singular_and_single_plural() {
+        assert_eq!(resolve(Some("org:7:user:9"), None).unwrap(), "org:7:user:9");
+        assert_eq!(resolve(None, Some(vec!["user:1"])).unwrap(), "user:1");
+    }
+
+    #[test]
+    fn resolve_rejects_missing_multi_and_malformed() {
+        assert!(resolve(None, None).is_err(), "missing");
+        assert!(resolve(None, Some(vec!["a", "b"])).is_err(), "multi-element");
+        assert!(resolve(Some("has space"), None).is_err(), "invalid char");
+        assert!(resolve(Some("a/b"), None).is_err(), "slash not allowed");
+        assert!(resolve(Some(&"x".repeat(101)), None).is_err(), "too long");
+        assert!(resolve(Some(""), None).is_err(), "empty");
     }
 }

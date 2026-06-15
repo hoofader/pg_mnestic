@@ -107,6 +107,14 @@ async fn search_and_profile_endpoints() {
     let memories: Vec<&str> = results.iter().filter_map(|r| r["memory"].as_str()).collect();
     assert!(memories.contains(&"the user loves climbing"), "search returns the memory, got {memories:?}");
     assert!(results.iter().all(|r| r["similarity"].is_number()), "each result carries a similarity score");
+    assert!(results.iter().all(|r| r["updatedAt"].is_string()), "each result carries updatedAt");
+
+    // A malformed containerTag is rejected at the edge.
+    let resp = app(state.clone())
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"x","containerTag":"bad tag!"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "invalid containerTag rejected");
 
     // Plural containerTags (single-element) is accepted as the same scope.
     let resp = app(state.clone())

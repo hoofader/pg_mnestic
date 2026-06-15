@@ -23,10 +23,17 @@ pub struct SearchResult {
     pub memory: Option<String>,
     /// The fused relevance score (wire name `similarity`, what the shells read).
     pub similarity: f64,
+    /// System time of the row (doc 04 §4 hit field).
+    pub updated_at: Option<String>,
 }
 
 fn to_result(h: RecallHit) -> SearchResult {
-    SearchResult { id: h.id.to_string(), memory: h.content, similarity: h.score }
+    SearchResult {
+        id: h.id.to_string(),
+        memory: h.content,
+        similarity: h.score,
+        updated_at: h.recorded_at.map(|t| t.to_rfc3339()),
+    }
 }
 
 #[derive(Deserialize)]
