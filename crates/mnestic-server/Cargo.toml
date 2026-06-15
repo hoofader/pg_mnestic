@@ -58,3 +58,11 @@ required-features = ["cli"]
 [[bin]]
 name = "revoke-key"
 required-features = ["cli"]
+
+[[bin]]
+name = "export-actor"
+required-features = ["cli"]
+
+[[bin]]
+name = "purge-actor"
+required-features = ["cli"]

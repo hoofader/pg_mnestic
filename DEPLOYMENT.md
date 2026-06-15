@@ -82,6 +82,25 @@ Anthropic call with `provider`, `model`, `op`, and input/output token counts. Ro
 target to a metrics sink (or grep the JSON logs) to track cost per tenant or per operation.
 Errors that produce a 500 log their cause at the error level; the HTTP body stays generic.
 
+## Backups and recovery
+
+All state is in Postgres, so backup and recovery are standard Postgres operations. There is no
+separate state to back up. A managed Postgres (RDS, Cloud SQL, Crunchy, etc.) gives automated
+snapshots plus point-in-time recovery; self-hosted, configure WAL archiving for PITR and take
+periodic base backups.
+
+- Set the retention window to your recovery and compliance needs. It also bounds how long an
+  erased subject's data lingers in backups (see GDPR.md).
+- A logical `pg_dump` is a useful periodic export, but PITR via WAL archiving is what bounds
+  data loss (RPO) on a failure.
+- Restore drill: practice a restore into a scratch instance and bring the server up against it
+  (`DATABASE_URL` pointed at the restored database). Migrations are frozen and append-only
+  (MIGRATIONS.md), so a restored database at an older schema is brought current by
+  `run_migrations` on the next start. Restoring a backup from a newer schema than the binary
+  knows about is the unsupported direction; deploy the matching (or newer) binary.
+- After restoring a backup, re-apply any erasures (`purge-actor`) that were honored after the
+  backup was taken, or the restore silently reintroduces deleted data.
+
 ## Notes
 
 - In-process TLS (rustls in the app) is intentionally out of scope. Terminating at the edge

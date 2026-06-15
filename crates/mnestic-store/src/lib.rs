@@ -727,6 +727,106 @@ impl Store {
         tx.commit().await?;
         Ok(rows.into_iter().map(|r| (r.get("id"), r.get("title"))).collect())
     }
+
+    /// Permanently delete every row belonging to one actor within a tenant: memories,
+    /// chunks, documents, sources, and the cached profile. This is the GDPR right-to-erasure
+    /// path, distinct from `forget` (a soft tombstone). It runs in one transaction so a
+    /// failure leaves the actor's data intact rather than half-deleted.
+    pub async fn purge_actor(&self, tenant_id: Uuid, actor_id: &str) -> Result<PurgeCounts> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        // supersedes_id is a self-referential NO ACTION FK. Supersession is always within one
+        // (tenant, actor), so every reference among the actor's rows points inside the set we
+        // are deleting; nulling them first lets the bulk delete run without a 23503. If a
+        // future feature ever lets supersession cross actors, this would fail closed (roll
+        // back the whole purge), not corrupt data.
+        sqlx::query("UPDATE mnestic_memory SET supersedes_id = NULL WHERE tenant_id = $1 AND actor_id = $2")
+            .bind(tenant_id)
+            .bind(actor_id)
+            .execute(&mut *tx)
+            .await?;
+        // Delete referencing rows before the rows they reference: memories and chunks point at
+        // sources/documents, so sources go last.
+        let memories = sqlx::query("DELETE FROM mnestic_memory WHERE tenant_id = $1 AND actor_id = $2")
+            .bind(tenant_id)
+            .bind(actor_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let chunks = sqlx::query("DELETE FROM mnestic_chunk WHERE tenant_id = $1 AND actor_id = $2")
+            .bind(tenant_id)
+            .bind(actor_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let documents = sqlx::query("DELETE FROM mnestic_document WHERE tenant_id = $1 AND actor_id = $2")
+            .bind(tenant_id)
+            .bind(actor_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let sources = sqlx::query("DELETE FROM mnestic_source WHERE tenant_id = $1 AND actor_id = $2")
+            .bind(tenant_id)
+            .bind(actor_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        let profile = sqlx::query("DELETE FROM mnestic_profile WHERE tenant_id = $1 AND actor_id = $2")
+            .bind(tenant_id)
+            .bind(actor_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(PurgeCounts { memories, chunks, documents, sources, profile })
+    }
+
+    /// Export everything held for one actor as a pretty-printed JSON document (the GDPR
+    /// right-to-access/portability path). Postgres assembles the document so the wire format
+    /// stays in lockstep with the schema. The opaque `embedding`/`content_tsv` retrieval
+    /// columns are dropped; the natural-language content and metadata are what the subject
+    /// gets. RLS-scoped to the tenant; `actor_id` is the subject filter.
+    pub async fn export_actor(&self, tenant_id: Uuid, actor_id: &str) -> Result<String> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let json: String = sqlx::query_scalar(
+            "SELECT jsonb_pretty(jsonb_build_object( \
+               'tenant_id', $1::uuid, \
+               'actor_id', $2::text, \
+               'exported_at', now(), \
+               'memories', COALESCE((SELECT jsonb_agg((to_jsonb(m) - 'embedding' - 'content_tsv') \
+                                       ORDER BY m.created_at) \
+                                     FROM mnestic_memory m \
+                                     WHERE m.tenant_id = $1 AND m.actor_id = $2), '[]'::jsonb), \
+               'documents', COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.created_at) \
+                                      FROM mnestic_document d \
+                                      WHERE d.tenant_id = $1 AND d.actor_id = $2), '[]'::jsonb), \
+               'chunks', COALESCE((SELECT jsonb_agg((to_jsonb(c) - 'embedding' - 'content_tsv') \
+                                     ORDER BY c.document_id, c.ord) \
+                                   FROM mnestic_chunk c \
+                                   WHERE c.tenant_id = $1 AND c.actor_id = $2), '[]'::jsonb), \
+               'sources', COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.ingested_at) \
+                                    FROM mnestic_source s \
+                                    WHERE s.tenant_id = $1 AND s.actor_id = $2), '[]'::jsonb), \
+               'profile', (SELECT to_jsonb(p) FROM mnestic_profile p \
+                           WHERE p.tenant_id = $1 AND p.actor_id = $2) \
+             ))::text",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(json)
+    }
+}
+
+/// Rows removed by `purge_actor`, per table, for the operator's audit log.
+#[derive(Debug, Clone, Default)]
+pub struct PurgeCounts {
+    pub memories: u64,
+    pub chunks: u64,
+    pub documents: u64,
+    pub sources: u64,
+    pub profile: u64,
 }
 
 // Static facts are durable and high-confidence (is_static or confidence >= the
