@@ -37,6 +37,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v4/memories", post(memories::add_memory))
         .route("/v4/memory", post(memory_tool::memory_tool))
+        .route("/v4/conversations", post(memories::ingest_conversation))
         .route("/v4/search", post(query::search))
         .route("/v4/profile", post(query::profile))
         .route("/v3/documents", post(documents::ingest_document))
