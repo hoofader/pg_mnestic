@@ -11,6 +11,8 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use mnestic_engine::Engine;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 pub mod auth;
 pub mod container_tag;
@@ -49,6 +51,15 @@ pub fn app(state: AppState) -> Router {
         .route("/mcp", post(mcp::mcp))
         // Bound the body so a single request cannot push a huge extract/embed job.
         .layer(DefaultBodyLimit::max(1024 * 1024))
+        // Outermost, so every request gets a span with method, path, status, and latency. The
+        // default span omits headers and bodies, so the bearer token and memory content are
+        // not logged. Span and response are lifted to INFO so one line per request shows at
+        // the default log level, not only under debug.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(state)
 }
 

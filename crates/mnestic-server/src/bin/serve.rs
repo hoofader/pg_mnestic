@@ -7,6 +7,8 @@
 //! The server speaks plain HTTP and must run behind a TLS-terminating proxy in production.
 //! Provision a key with the issue-key binary:
 //! `cargo run -p mnestic-server --features cli --bin issue-key -- <tenant>`.
+//! Logs: RUST_LOG sets levels (default `info`); set MNESTIC_LOG_FORMAT=json for structured
+//! output to ship to a log aggregator.
 
 use std::sync::Arc;
 
@@ -16,9 +18,24 @@ use mnestic_model::{AnthropicExtractor, OpenAiEmbedder};
 use mnestic_server::{app, AppState};
 use mnestic_store::{run_migrations, Store};
 use sqlx::postgres::PgPoolOptions;
+use tracing_subscriber::EnvFilter;
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    let json = std::env::var("MNESTIC_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if json {
+        builder.json().init();
+    } else {
+        builder.init();
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let dsn = std::env::var("DATABASE_URL")?;
     let openai_key = std::env::var("OPENAI_API_KEY")?;
     let anthropic_key = std::env::var("ANTHROPIC_API_KEY")?;
@@ -38,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Arc::new(Engine::new(Store::new(pool), embedder, extractor));
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    eprintln!("mnestic-server listening on {bind}");
+    tracing::info!(%bind, "mnestic-server listening");
     axum::serve(listener, app(AppState { engine })).await?;
     Ok(())
 }

@@ -19,6 +19,7 @@ repository = "https://github.com/mdashti/pg_mnestic"
 [workspace.dependencies]
 async-trait = "0.1"
 thiserror = "2"
+tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -32,8 +32,9 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Internal(detail) => {
-                // Keep the cause out of the response; a public 500 must not reveal it.
-                eprintln!("mnestic-server internal error: {detail}");
+                // Keep the cause out of the response; a public 500 must not reveal it. The
+                // detail goes to the logs so an operator can still diagnose it.
+                tracing::error!(error = %detail, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
             }
         };

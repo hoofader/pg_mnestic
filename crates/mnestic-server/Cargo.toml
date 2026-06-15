@@ -8,8 +8,14 @@ repository.workspace = true
 
 [features]
 default = []
-# The runnable server binary, wired to the real cloud providers.
-serve = ["dep:mnestic-model", "mnestic-model/openai", "mnestic-model/anthropic"]
+# The runnable server binary, wired to the real cloud providers. Pulls the log subscriber,
+# which only the binary initializes.
+serve = [
+    "dep:mnestic-model",
+    "mnestic-model/openai",
+    "mnestic-model/anthropic",
+    "dep:tracing-subscriber",
+]
 # The key-issuance CLI. The keys module always compiles; this only gates the binary.
 cli = []
 
@@ -27,6 +33,9 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rand = "0.8"
+tracing = { workspace = true }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"], optional = true }
 
 [dev-dependencies]
 mnestic-model = { workspace = true }
