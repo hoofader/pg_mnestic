@@ -40,11 +40,24 @@ impl OpenAiEmbedder {
 #[derive(Deserialize)]
 struct EmbeddingResponse {
     data: Vec<EmbeddingDatum>,
+    #[serde(default)]
+    usage: OpenAiUsage,
 }
 
 #[derive(Deserialize)]
 struct EmbeddingDatum {
     embedding: Vec<f32>,
+}
+
+/// Token accounting from an OpenAI response. Defaults to zero so a missing field (or a mock
+/// server that omits it) never fails the parse; the metric just reads zero. Embeddings have
+/// no generated output, so `completion_tokens` is absent there and reads zero.
+#[derive(Deserialize, Default)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
 }
 
 #[async_trait]
@@ -62,6 +75,17 @@ impl Embedder for OpenAiEmbedder {
             .json()
             .await
             .map_err(|e| Error::Provider(e.to_string()))?;
+        // Token spend feeds the observability pipeline; target groups all provider spend and
+        // every event shares the provider/model/op/input/output schema.
+        tracing::info!(
+            target: "mnestic::tokens",
+            provider = "openai",
+            model = %self.model,
+            op = "embed",
+            input_tokens = parsed.usage.prompt_tokens,
+            output_tokens = parsed.usage.completion_tokens,
+            "token usage"
+        );
         Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
     }
 }
@@ -92,6 +116,8 @@ impl OpenAiExtractor {
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: OpenAiUsage,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +152,16 @@ impl Extractor for OpenAiExtractor {
             .json()
             .await
             .map_err(|e| Error::Provider(e.to_string()))?;
+        tracing::info!(
+            target: "mnestic::tokens",
+            provider = "openai",
+            model = %self.model,
+            op = "extract",
+            input_tokens = chat.usage.prompt_tokens,
+            output_tokens = chat.usage.completion_tokens,
+            "token usage"
+        );
+        // Schema matches the embed event above and the Anthropic extractor.
         let raw = chat
             .choices
             .first()

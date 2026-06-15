@@ -70,6 +70,18 @@ server {
 upstream check and for liveness/readiness probes. It does not assert database connectivity;
 a deeper readiness check is a later roadmap item.
 
+## Logging and metrics
+
+The server logs through `tracing`. `RUST_LOG` sets levels (default `info`), and
+`MNESTIC_LOG_FORMAT=json` switches to structured JSON for a log aggregator. Each request logs
+one info line with method, path, status, and latency; the request span omits headers and
+bodies, so bearer tokens and memory content never reach the logs.
+
+Provider token spend is logged on the `mnestic::tokens` target, one event per OpenAI or
+Anthropic call with `provider`, `model`, `op`, and input/output token counts. Route that
+target to a metrics sink (or grep the JSON logs) to track cost per tenant or per operation.
+Errors that produce a 500 log their cause at the error level; the HTTP body stays generic.
+
 ## Notes
 
 - In-process TLS (rustls in the app) is intentionally out of scope. Terminating at the edge

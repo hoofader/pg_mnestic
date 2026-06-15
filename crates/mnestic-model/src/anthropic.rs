@@ -67,6 +67,18 @@ struct MessagesResponse {
     content: Vec<ContentBlock>,
     #[serde(default)]
     stop_reason: Option<String>,
+    #[serde(default)]
+    usage: AnthropicUsage,
+}
+
+/// Token accounting from a Messages API response. Defaults to zero so a missing field never
+/// fails the parse; the metric just reads zero.
+#[derive(Deserialize, Default)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +113,15 @@ impl Extractor for AnthropicExtractor {
             .json()
             .await
             .map_err(|e| Error::Provider(e.to_string()))?;
+        tracing::info!(
+            target: "mnestic::tokens",
+            provider = "anthropic",
+            model = %self.model,
+            op = "extract",
+            input_tokens = message.usage.input_tokens,
+            output_tokens = message.usage.output_tokens,
+            "token usage"
+        );
         // A refusal or a max_tokens truncation does not produce schema JSON; report it
         // plainly instead of letting it fall through to a confusing parse error.
         match message.stop_reason.as_deref() {
