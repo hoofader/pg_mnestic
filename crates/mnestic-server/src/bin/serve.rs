@@ -9,7 +9,8 @@
 //! `cargo run -p mnestic-server --features cli --bin issue-key -- <tenant>`.
 //! Logs: RUST_LOG sets levels (default `info`); set MNESTIC_LOG_FORMAT=json for structured
 //! output to ship to a log aggregator. MNESTIC_DB_MAX_CONNECTIONS sizes the Postgres pool
-//! (default 16). On SIGTERM/SIGINT the server stops accepting connections and drains
+//! (default 16). MNESTIC_EXTRACT_MODEL overrides the extraction model (default Opus 4.8) for
+//! a cheaper tier. On SIGTERM/SIGINT the server stops accepting connections and drains
 //! in-flight requests before exiting.
 
 use std::sync::Arc;
@@ -61,9 +62,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     run_migrations(&pool).await?;
 
+    // The embedder model is fixed: its 1536 dimension is baked into the halfvec schema, so
+    // changing it needs a migration and a re-embed, not an env var.
     let embedder: Arc<dyn Embedder> =
         Arc::new(OpenAiEmbedder::new(openai_key, "text-embedding-3-small"));
-    let extractor: Arc<dyn Extractor> = Arc::new(AnthropicExtractor::new(&anthropic_key));
+    // Extraction defaults to Opus 4.8. A cost-sensitive deployment can drop to a cheaper tier
+    // (for example claude-sonnet-4-6, or claude-haiku-4-5 whose 200K window is smaller than
+    // Opus/Sonnet's 1M) via MNESTIC_EXTRACT_MODEL; the request schema is the same across
+    // models, so quality, price, and context window are the tradeoffs.
+    let mut anthropic = AnthropicExtractor::new(&anthropic_key);
+    if let Ok(model) = std::env::var("MNESTIC_EXTRACT_MODEL") {
+        let model = model.trim();
+        if !model.is_empty() {
+            anthropic = anthropic.with_model(model);
+            tracing::info!(extract_model = model, "extraction model overridden");
+        }
+    }
+    let extractor: Arc<dyn Extractor> = Arc::new(anthropic);
     let engine = Arc::new(Engine::new(Store::new(pool), embedder, extractor));
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

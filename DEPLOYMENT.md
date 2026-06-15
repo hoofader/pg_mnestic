@@ -106,6 +106,14 @@ periodic base backups.
 - `MNESTIC_DB_MAX_CONNECTIONS` sizes the Postgres pool (default 16). Size it to the database's
   connection budget across all server replicas, not to request rate; a pooled connection that
   can't be acquired within 10s fails the request rather than hanging it.
+- `MNESTIC_EXTRACT_MODEL` overrides the extraction model (default `claude-opus-4-8`). A
+  cost-sensitive deployment can set a cheaper tier such as `claude-sonnet-4-6` (same 1M
+  context window) or `claude-haiku-4-5` (cheapest, but a 200K window, so a large ingest that
+  fits Opus or Sonnet can fail extraction on Haiku). The request schema and pipeline are
+  unchanged; quality and price are the tradeoff. An invalid model id is not caught at
+  startup; it surfaces as a provider error on every ingest, visible in the logs. Watch the
+  `mnestic::tokens` metrics to compare cost. Embeddings are not configurable (the dimension is
+  fixed in the schema).
 - On `SIGTERM` (the orchestrator's stop signal) or `SIGINT`, the server stops accepting new
   connections and drains in-flight requests before exiting. There is no internal drain
   deadline yet, so the orchestrator's termination grace period is the only bound: set it above
