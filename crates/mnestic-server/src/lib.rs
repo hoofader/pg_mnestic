@@ -13,6 +13,7 @@ use mnestic_engine::Engine;
 
 pub mod auth;
 pub mod container_tag;
+mod directory;
 mod documents;
 pub mod error;
 mod mcp;
@@ -40,6 +41,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v4/profile", post(query::profile))
         .route("/v3/documents", post(documents::ingest_document))
         .route("/v3/search", post(documents::search_documents))
+        .route("/v3/session", get(directory::session))
+        .route("/v3/projects", get(directory::projects))
         .route("/mcp", post(mcp::mcp))
         // Bound the body so a single request cannot push a huge extract/embed job.
         .layer(DefaultBodyLimit::max(1024 * 1024))

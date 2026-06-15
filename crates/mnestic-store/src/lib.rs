@@ -679,6 +679,35 @@ impl Store {
             refreshed_at: Some(r.get("refreshed_at")),
         }))
     }
+
+    /// The tenant's external id (the supermemory userId). Read off RLS like the api_key
+    /// bootstrap, since mnestic_tenant is the registry, not tenant-scoped data.
+    pub async fn tenant_external_id(&self, tenant_id: Uuid) -> Result<Option<String>> {
+        let id = sqlx::query_scalar("SELECT external_id FROM mnestic_tenant WHERE id = $1")
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(id)
+    }
+
+    /// Distinct container tags across the tenant's memories and chunks (the supermemory
+    /// "projects"). RLS-scoped, so it runs in a tenant tx.
+    pub async fn list_container_tags(&self, tenant_id: Uuid) -> Result<Vec<String>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let tags: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT tag FROM ( \
+                SELECT unnest(container_tags) AS tag FROM mnestic_memory \
+                  WHERE tenant_id = $1 AND is_latest AND status = 'active' \
+                UNION \
+                SELECT unnest(container_tags) AS tag FROM mnestic_chunk WHERE tenant_id = $1 \
+             ) s WHERE tag <> '' ORDER BY tag",
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(tags)
+    }
 }
 
 // Static facts are durable and high-confidence (is_static or confidence >= the

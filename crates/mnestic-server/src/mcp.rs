@@ -103,6 +103,16 @@ fn tools_list() -> Value {
                 },
                 "required": ["query"]
             }
+        },
+        {
+            "name": "listProjects",
+            "description": "List the container tags (projects) in use.",
+            "inputSchema": { "type": "object", "properties": { "refresh": { "type": "boolean" } } }
+        },
+        {
+            "name": "whoAmI",
+            "description": "Return the authenticated user (userId, email, name).",
+            "inputSchema": { "type": "object", "properties": {} }
         }
     ]})
 }
@@ -118,6 +128,8 @@ async fn call_tool(state: &AppState, tenant: Uuid, params: Option<&Value>) -> Re
     let outcome = match name {
         "memory" => memory_tool(state, tenant, &args).await,
         "recall" => recall_tool(state, tenant, &args).await,
+        "listProjects" => list_projects_tool(state, tenant).await,
+        "whoAmI" => who_am_i_tool(state, tenant).await,
         other => return Err((-32602, format!("unknown tool: {other}"))),
     };
     Ok(match outcome {
@@ -199,4 +211,14 @@ async fn recall_tool(state: &AppState, tenant: Uuid, args: &Value) -> Result<Str
         out["profile"] = json!({ "staticFacts": p.static_facts, "dynamicCtx": p.dynamic_ctx });
     }
     Ok(out.to_string())
+}
+
+async fn list_projects_tool(state: &AppState, tenant: Uuid) -> Result<String, String> {
+    let tags = state.engine.store().list_container_tags(tenant).await.map_err(scrub)?;
+    Ok(json!({ "projects": tags }).to_string())
+}
+
+async fn who_am_i_tool(state: &AppState, tenant: Uuid) -> Result<String, String> {
+    let user_id = state.engine.store().tenant_external_id(tenant).await.map_err(scrub)?.unwrap_or_default();
+    Ok(json!({ "userId": user_id, "email": Value::Null, "name": Value::Null }).to_string())
 }
