@@ -4,6 +4,7 @@
 //! onto the Mnestic engine so the existing shells drive Mnestic unchanged. This module
 //! wires the router and shared state; the scoping mapping lives in `container_tag`.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
@@ -53,6 +54,31 @@ pub fn app(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Guard against shipping bearer tokens in cleartext. The server speaks plain HTTP, so it must
+/// sit behind a TLS-terminating reverse proxy (DEPLOYMENT.md). A loopback bind is always
+/// allowed: the only reachable peer is on the same host (the proxy, or local dev). A
+/// non-loopback bind puts the plaintext socket on the network, so it is refused unless the
+/// operator asserts TLS is terminated upstream by setting `MNESTIC_TRUST_PROXY=1`.
+///
+/// `bind` must be an `ip:port`. A hostname (including `localhost`) is rejected, because
+/// loopback-vs-network cannot be reasoned about before resolution and resolution is
+/// spoofable.
+pub fn check_bind_safety(bind: &str, trust_proxy: bool) -> Result<(), String> {
+    let addr: SocketAddr = bind.parse().map_err(|e| {
+        format!("invalid bind address '{bind}': {e}; use an ip:port like 127.0.0.1:8080")
+    })?;
+    if addr.ip().is_loopback() || trust_proxy {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to bind {bind}: it is reachable off-host and the server speaks plain \
+             HTTP, so bearer tokens would cross the network in cleartext. Terminate TLS at a \
+             reverse proxy and set MNESTIC_TRUST_PROXY=1, or bind a loopback address. See \
+             DEPLOYMENT.md."
+        ))
+    }
 }
 
 /// Recall fan-out default and cap. Clamping a client value keeps it out of a negative
@@ -123,5 +149,20 @@ mod tests {
         assert!(resolve(Some("a/b"), None).is_err(), "slash not allowed");
         assert!(resolve(Some(&"x".repeat(101)), None).is_err(), "too long");
         assert!(resolve(Some(""), None).is_err(), "empty");
+    }
+
+    #[test]
+    fn bind_safety_allows_loopback_and_refuses_exposed() {
+        // Loopback is always fine: nothing off-host can reach it.
+        assert!(check_bind_safety("127.0.0.1:8080", false).is_ok());
+        assert!(check_bind_safety("[::1]:8080", false).is_ok());
+        // A network-reachable bind over plain HTTP is refused without the proxy assertion.
+        assert!(check_bind_safety("0.0.0.0:8080", false).is_err());
+        assert!(check_bind_safety("[::]:8080", false).is_err());
+        assert!(check_bind_safety("10.0.0.5:8080", false).is_err());
+        // Allowed once the operator asserts TLS is terminated upstream.
+        assert!(check_bind_safety("0.0.0.0:8080", true).is_ok());
+        // A non-address is a clear error, not a silent pass-through.
+        assert!(check_bind_safety("localhost:8080", false).is_err());
     }
 }
