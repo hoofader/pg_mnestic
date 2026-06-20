@@ -66,6 +66,16 @@ fn patch_req(token: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn search_req(token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v4/search")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -268,11 +278,12 @@ async fn add_memory_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND, "unknown id is a 404");
 
-    // Plural containerTags is accepted as the same scope shape.
+    // Plural containerTags is accepted as the same scope shape. The save carries `metadata`,
+    // which is stored on the resulting rows and returned by /v4/search.
     let resp = app(state.clone())
         .oneshot(post(
             Some("sk-test"),
-            r#"{"content":"the user enjoys jazz","containerTags":["user:99"],"customId":"m2"}"#,
+            r#"{"content":"the user enjoys jazz","containerTags":["user:99"],"customId":"m2","metadata":{"team":"infra"}}"#,
         ))
         .await
         .unwrap();
@@ -280,6 +291,24 @@ async fn add_memory_endpoint() {
     let j = body_json(resp).await;
     assert_eq!(j["status"], "saved");
     assert_eq!(j["containerTag"], "user:99", "echoes the resolved tag");
+
+    // /v4/search recalls the seeded memory and surfaces the metadata stored on its row.
+    let resp = app(state.clone())
+        .oneshot(search_req(
+            "sk-test",
+            r#"{"q":"jazz","containerTag":"user:99"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["memory"] == "the user enjoys jazz")
+        .expect("the seeded memory is recalled");
+    assert_eq!(hit["metadata"]["team"], "infra", "search returns the stored metadata");
 
     // Empty content is a 400.
     let resp = app(state)

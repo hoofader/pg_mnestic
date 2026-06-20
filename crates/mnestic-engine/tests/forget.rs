@@ -159,8 +159,8 @@ async fn forget_does_not_resurrect_superseded_prior() {
     // v1 (NYC) then a later v2 (SF) that supersedes it, ordered by event time.
     let t1 = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
     let t2 = Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap();
-    engine.add_at(tenant, "u", &tags, "NYC", "conversation", Some("v1"), Some(t1)).await.unwrap();
-    let r = engine.add_at(tenant, "u", &tags, "SF", "conversation", Some("v2"), Some(t2)).await.unwrap();
+    engine.add_at(tenant, "u", &tags, "NYC", "conversation", Some("v1"), Some(t1), &serde_json::json!({})).await.unwrap();
+    let r = engine.add_at(tenant, "u", &tags, "SF", "conversation", Some("v2"), Some(t2), &serde_json::json!({})).await.unwrap();
     assert_eq!(r.superseded.len(), 1, "v2 supersedes v1");
 
     let cities = |q: &'static str| {

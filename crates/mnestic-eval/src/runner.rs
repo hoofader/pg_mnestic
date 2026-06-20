@@ -140,7 +140,7 @@ async fn ingest_case(engine: &Engine, tenant_id: Uuid, actor: &str, case: &Case)
             continue;
         }
         engine
-            .add_at(tenant_id, actor, &tags, &text, "conversation", None, session.date)
+            .add_at(tenant_id, actor, &tags, &text, "conversation", None, session.date, &serde_json::json!({}))
             .await?;
     }
     Ok(())

@@ -30,6 +30,8 @@ pub struct MemoryToolRequest {
     pub container_tags: Option<Vec<String>>,
     #[serde(default)]
     pub custom_id: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -59,15 +61,18 @@ pub async fn memory_tool(
 
     match req.action.as_str() {
         "save" => {
+            let meta = crate::memories::normalize_metadata(req.metadata);
             let result = state
                 .engine
-                .add(
+                .add_at(
                     tenant,
                     &actor_id,
                     &container_tags,
                     &req.content,
                     "conversation",
                     req.custom_id.as_deref(),
+                    None,
+                    &meta,
                 )
                 .await?;
             let status = if result.idempotent_skip { "skipped" } else { "saved" };

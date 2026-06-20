@@ -232,7 +232,8 @@ impl Engine {
         kind: &str,
         custom_id: Option<&str>,
     ) -> Result<AddResult> {
-        self.add_at(tenant_id, actor_id, container_tags, content, kind, custom_id, None)
+        let metadata = serde_json::json!({});
+        self.add_at(tenant_id, actor_id, container_tags, content, kind, custom_id, None, &metadata)
             .await
     }
 
@@ -255,6 +256,7 @@ impl Engine {
         kind: &str,
         custom_id: Option<&str>,
         as_of: Option<DateTime<Utc>>,
+        metadata: &serde_json::Value,
     ) -> Result<AddResult> {
         let ctx = Ctx {
             actor_id: actor_id.to_string(),
@@ -270,6 +272,7 @@ impl Engine {
             kind,
             custom_id,
             as_of,
+            metadata,
             candidates: &candidates,
             embeddings: &embeddings,
         };
@@ -375,6 +378,7 @@ impl Engine {
                 container_tags: req.container_tags,
                 source_id,
                 embedding,
+                metadata: req.metadata,
                 subject,
                 attribute,
                 single_valued,
@@ -516,6 +520,9 @@ impl Engine {
         let (candidates, embeddings) = self.extract_and_embed(&pending.content, &ctx).await?;
         // kind is read only by source insertion, which already ran at enqueue, so it is inert
         // here.
+        // Async ingestion does not yet carry the request's metadata: the enqueue path stores only
+        // the raw source, so the worker has nothing to thread here.
+        let empty = serde_json::json!({});
         let req = WriteRequest {
             tenant_id,
             actor_id: &pending.actor_id,
@@ -524,6 +531,7 @@ impl Engine {
             kind: "conversation",
             custom_id: None,
             as_of: None,
+            metadata: &empty,
             candidates: &candidates,
             embeddings: &embeddings,
         };
@@ -971,6 +979,7 @@ struct WriteRequest<'a> {
     kind: &'a str,
     custom_id: Option<&'a str>,
     as_of: Option<DateTime<Utc>>,
+    metadata: &'a serde_json::Value,
     candidates: &'a [Candidate],
     embeddings: &'a [Vec<f32>],
 }
@@ -982,6 +991,7 @@ struct MemoryWrite<'a> {
     container_tags: &'a [String],
     source_id: Uuid,
     embedding: &'a [f32],
+    metadata: &'a serde_json::Value,
     /// Canonicalized key (post-ontology), stored so resolution and storage agree.
     subject: Option<String>,
     attribute: Option<String>,
@@ -1037,6 +1047,7 @@ impl MemoryWrite<'_> {
             is_latest,
             supersedes_id,
             forget_after: c.forget_after,
+            metadata: self.metadata,
         };
         Ok(Store::insert_memory_full_tx(tx, &row).await?)
     }

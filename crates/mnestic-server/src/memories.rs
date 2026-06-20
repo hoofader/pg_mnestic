@@ -27,6 +27,8 @@ pub struct AddMemoryRequest {
     /// `dynamic` enqueues and a worker extracts out of band, so the call returns fast.
     #[serde(default)]
     pub dreaming: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -60,6 +62,8 @@ pub async fn add_memory(
         .map(|d| d.eq_ignore_ascii_case("dynamic"))
         .unwrap_or(false);
     if dynamic {
+        // Dynamic ingestion enqueues the raw source for out-of-band extraction, which does not
+        // yet carry the request's metadata, so it is dropped on this path for now.
         let enq = state
             .engine
             .enqueue(tenant, &actor_id, &container_tags, &req.content, "conversation", req.custom_id.as_deref())
@@ -72,15 +76,18 @@ pub async fn add_memory(
         }));
     }
 
+    let meta = normalize_metadata(req.metadata);
     let result = state
         .engine
-        .add(
+        .add_at(
             tenant,
             &actor_id,
             &container_tags,
             &req.content,
             "conversation",
             req.custom_id.as_deref(),
+            None,
+            &meta,
         )
         .await?;
 
@@ -227,11 +234,7 @@ pub async fn update_memory(
         None => (None, None),
     };
 
-    // An explicit null maps to the empty object, matching the column's NOT NULL default.
-    let metadata = match req.metadata {
-        Some(serde_json::Value::Null) | None => serde_json::json!({}),
-        Some(v) => v,
-    };
+    let metadata = normalize_metadata(req.metadata);
 
     let updated = state
         .engine
@@ -261,6 +264,15 @@ pub async fn update_memory(
         root_memory_id: Some(v.root_memory_id.to_string()),
         version: v.version,
     }))
+}
+
+/// Normalize the wire `metadata` to the value the store binds: an absent field or an explicit
+/// null becomes the empty object, matching the column's NOT NULL default.
+pub(crate) fn normalize_metadata(metadata: Option<serde_json::Value>) -> serde_json::Value {
+    match metadata {
+        Some(serde_json::Value::Null) | None => serde_json::json!({}),
+        Some(v) => v,
+    }
 }
 
 /// Parse an optional RFC3339 timestamp, treating an explicit JSON null (already mapped to
@@ -293,6 +305,8 @@ pub struct ConversationRequest {
     pub container_tag: Option<String>,
     #[serde(default)]
     pub container_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -316,7 +330,7 @@ pub async fn ingest_conversation(
     // context (evidence often spans a user+assistant pair), matching the eval's
     // per-session ingest. conversationId is the idempotency key: re-posting it, even a
     // grown thread, is skipped rather than appended, so a retry never duplicates;
-    // re-ingest under a new conversationId. The wire `metadata` is accepted and ignored.
+    // re-ingest under a new conversationId.
     let text = req
         .messages
         .iter()
@@ -327,9 +341,19 @@ pub async fn ingest_conversation(
         return Err(ApiError::BadRequest("messages have no content".into()));
     }
 
+    let meta = normalize_metadata(req.metadata);
     let result = state
         .engine
-        .add(tenant, &actor_id, &container_tags, &text, "conversation", Some(&req.conversation_id))
+        .add_at(
+            tenant,
+            &actor_id,
+            &container_tags,
+            &text,
+            "conversation",
+            Some(&req.conversation_id),
+            None,
+            &meta,
+        )
         .await?;
 
     let status = if result.idempotent_skip { "skipped" } else { "ingested" };

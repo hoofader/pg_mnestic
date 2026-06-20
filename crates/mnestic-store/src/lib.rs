@@ -142,6 +142,7 @@ pub struct NewMemoryFull<'a> {
     pub is_latest: bool,
     pub supersedes_id: Option<Uuid>,
     pub forget_after: Option<DateTime<Utc>>,
+    pub metadata: &'a serde_json::Value,
 }
 
 /// The new row produced by a versioned update, with the lineage fields the SDK's
@@ -500,9 +501,9 @@ impl Store {
             "INSERT INTO mnestic_memory \
                (tenant_id, actor_id, container_tags, content, subject, attribute, value, \
                 single_valued, confidence, is_static, mem_type, embedding, source_id, \
-                valid_time, is_latest, supersedes_id, forget_after) \
+                valid_time, is_latest, supersedes_id, forget_after, metadata) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::halfvec, $13, \
-                     tstzrange($14, $15), $16, $17, $18) \
+                     tstzrange($14, $15), $16, $17, $18, $19) \
              RETURNING id",
         )
         .bind(m.tenant_id)
@@ -523,6 +524,7 @@ impl Store {
         .bind(m.is_latest)
         .bind(m.supersedes_id)
         .bind(m.forget_after)
+        .bind(m.metadata)
         .fetch_one(&mut **tx)
         .await?;
         Ok(id)
