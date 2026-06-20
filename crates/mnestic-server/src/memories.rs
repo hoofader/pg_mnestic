@@ -23,6 +23,10 @@ pub struct AddMemoryRequest {
     pub container_tags: Option<Vec<String>>,
     #[serde(default)]
     pub custom_id: Option<String>,
+    /// supermemory's `dreaming` mode (doc 04 §3): `instant` (default) extracts synchronously;
+    /// `dynamic` enqueues and a worker extracts out of band, so the call returns fast.
+    #[serde(default)]
+    pub dreaming: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -32,7 +36,8 @@ pub struct AddMemoryResponse {
     pub id: String,
     /// Echoed back so the caller sees the tag it sent (doc 04 §2 round-trip).
     pub container_tag: String,
-    /// "saved" or "skipped" (an idempotent repeat of the same custom_id).
+    /// "saved" (sync), "queued" (dreaming: dynamic, extraction deferred to the worker), or
+    /// "skipped" (an idempotent repeat of the same custom_id).
     pub status: String,
 }
 
@@ -49,6 +54,24 @@ pub async fn add_memory(
     }
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
+
+    let dynamic = req
+        .dreaming
+        .as_deref()
+        .map(|d| d.eq_ignore_ascii_case("dynamic"))
+        .unwrap_or(false);
+    if dynamic {
+        let enq = state
+            .engine
+            .enqueue(tenant, &actor_id, &container_tags, &req.content, "conversation", req.custom_id.as_deref())
+            .await?;
+        let status = if enq.queued { "queued" } else { "skipped" };
+        return Ok(Json(AddMemoryResponse {
+            id: enq.source_id.to_string(),
+            container_tag: tag,
+            status: status.to_string(),
+        }));
+    }
 
     let result = state
         .engine

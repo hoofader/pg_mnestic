@@ -14,28 +14,10 @@
 //! in-flight requests before exiting.
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use mnestic_core::{Embedder, Extractor};
 use mnestic_engine::Engine;
-use mnestic_model::{AnthropicExtractor, OpenAiEmbedder};
-use mnestic_server::{app, AppState};
+use mnestic_server::{app, build_providers, connect_pool, init_tracing, shutdown_signal, AppState};
 use mnestic_store::{run_migrations, Store};
-use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::EnvFilter;
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    let json = std::env::var("MNESTIC_LOG_FORMAT")
-        .map(|v| v.eq_ignore_ascii_case("json"))
-        .unwrap_or(false);
-    if json {
-        builder.json().init();
-    } else {
-        builder.init();
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,66 +32,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fail fast rather than expose plaintext bearer tokens on a public socket.
     mnestic_server::check_bind_safety(&bind, trust_proxy)?;
 
-    let max_conns = mnestic_server::db_max_connections(
-        std::env::var("MNESTIC_DB_MAX_CONNECTIONS").ok().as_deref(),
-    );
-    let pool = PgPoolOptions::new()
-        .max_connections(max_conns)
-        // Fail a request that can't get a connection rather than hang it indefinitely when
-        // the pool is saturated.
-        .acquire_timeout(Duration::from_secs(10))
-        .connect(&dsn)
-        .await?;
+    let pool = connect_pool(&dsn).await?;
     run_migrations(&pool).await?;
 
-    // The embedder model is fixed: its 1536 dimension is baked into the halfvec schema, so
-    // changing it needs a migration and a re-embed, not an env var.
-    let embedder: Arc<dyn Embedder> =
-        Arc::new(OpenAiEmbedder::new(openai_key, "text-embedding-3-small"));
-    // Extraction defaults to Opus 4.8. A cost-sensitive deployment can drop to a cheaper tier
-    // (for example claude-sonnet-4-6, or claude-haiku-4-5 whose 200K window is smaller than
-    // Opus/Sonnet's 1M) via MNESTIC_EXTRACT_MODEL; the request schema is the same across
-    // models, so quality, price, and context window are the tradeoffs.
-    let mut anthropic = AnthropicExtractor::new(&anthropic_key);
-    if let Ok(model) = std::env::var("MNESTIC_EXTRACT_MODEL") {
-        let model = model.trim();
-        if !model.is_empty() {
-            anthropic = anthropic.with_model(model);
-            tracing::info!(extract_model = model, "extraction model overridden");
-        }
-    }
-    let extractor: Arc<dyn Extractor> = Arc::new(anthropic);
+    let (embedder, extractor) = build_providers(openai_key, &anthropic_key);
     let engine = Arc::new(Engine::new(Store::new(pool), embedder, extractor));
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    tracing::info!(%bind, max_connections = max_conns, "mnestic-server listening");
+    tracing::info!(%bind, "mnestic-server listening");
     axum::serve(listener, app(AppState { engine }))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     tracing::info!("mnestic-server stopped");
     Ok(())
-}
-
-/// Resolve when the process receives SIGTERM (the orchestrator's stop signal) or SIGINT
-/// (ctrl-c). axum then stops accepting new connections and waits for in-flight requests to
-/// finish before `serve` returns.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("install ctrl-c handler");
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
-    }
-    tracing::info!("shutdown signal received, draining in-flight requests");
 }

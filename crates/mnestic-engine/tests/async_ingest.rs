@@ -4,6 +4,7 @@
 //! worker pass extracts and persists, idempotency holds, and the lease prevents two workers
 //! from claiming the same source. Runs as a non-BYPASSRLS role so the queue works under RLS.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,8 +54,36 @@ async fn connect(opts: PgConnectOptions) -> PgPool {
     panic!("could not connect to postgres: {last_err:?}");
 }
 
-#[tokio::test]
-async fn enqueue_then_worker_extracts() {
+/// Extractor that fails its first call and succeeds after, so a worker batch contains one
+/// poison source and one good one.
+struct FailFirst {
+    calls: AtomicU32,
+}
+
+#[async_trait]
+impl Extractor for FailFirst {
+    async fn extract(&self, _text: &str, _ctx: &Ctx) -> mnestic_core::Result<Vec<Candidate>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(mnestic_core::Error::Extraction("boom".into()));
+        }
+        Ok(vec![Candidate {
+            content: "the user enjoys sailing".to_string(),
+            subject: None,
+            attribute: None,
+            value: None,
+            single_valued: false,
+            mem_type: MemType::Fact,
+            confidence: 0.8,
+            is_static: false,
+            temporal: Temporal::None,
+            forget_after: None,
+        }])
+    }
+}
+
+/// Start pgvector, migrate, create a non-BYPASSRLS app role and a tenant. Returns the
+/// container (kept alive by the caller), the app-role pool, and the tenant id.
+async fn setup() -> (testcontainers::ContainerAsync<GenericImage>, PgPool, Uuid) {
     let container = GenericImage::new("pgvector/pgvector", "pg16")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -98,6 +127,12 @@ async fn enqueue_then_worker_extracts() {
         .password("app")
         .database("postgres");
     let app_pool = connect(app_opts).await;
+    (container, app_pool, tenant)
+}
+
+#[tokio::test]
+async fn enqueue_then_worker_extracts() {
+    let (_container, app_pool, tenant) = setup().await;
 
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(OneFact);
@@ -156,5 +191,34 @@ async fn enqueue_then_worker_extracts() {
     assert!(
         store.claim_pending_source(tenant, 0).await.unwrap().is_none(),
         "a marked-done source is no longer pending"
+    );
+}
+
+#[tokio::test]
+async fn one_poison_source_does_not_block_the_batch() {
+    let (_container, app_pool, tenant) = setup().await;
+
+    let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+    let extractor: Arc<dyn Extractor> = Arc::new(FailFirst { calls: AtomicU32::new(0) });
+    let engine = Engine::new(Store::new(app_pool.clone()), embedder, extractor);
+    let store = Store::new(app_pool);
+    let tags: Vec<String> = Vec::new();
+
+    // Two queued sources; extraction fails on the first claimed one (oldest), succeeds on the
+    // next. The batch keeps going past the failure and commits the good one.
+    engine.enqueue(tenant, "u", &tags, "first", "conversation", Some("p1")).await.unwrap();
+    engine.enqueue(tenant, "u", &tags, "second", "conversation", Some("p2")).await.unwrap();
+    let processed = engine.process_pending(tenant, 300, 10).await.unwrap();
+    assert_eq!(processed, 1, "the good source committed despite the poison one");
+    assert!(
+        !engine.recall(tenant, "u", "sailing", 10).await.unwrap().is_empty(),
+        "the good source is recallable"
+    );
+
+    // The failed source stayed leased for the batch (so it could not head-of-line), and is
+    // still pending for a later retry once its lease lapses.
+    assert!(
+        store.claim_pending_source(tenant, 0).await.unwrap().is_some(),
+        "the poison source remains pending after its lease lapses"
     );
 }

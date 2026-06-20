@@ -48,6 +48,10 @@ name = "serve"
 required-features = ["serve"]
 
 [[bin]]
+name = "worker"
+required-features = ["serve"]
+
+[[bin]]
 name = "issue-key"
 required-features = ["cli"]
 

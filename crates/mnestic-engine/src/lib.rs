@@ -478,8 +478,10 @@ impl Engine {
 
     /// Process up to `max` pending sources for one tenant. Each is leased for `lease_secs`
     /// (so a crashed worker's claim is reclaimable), extracted, and persisted; the flag is
-    /// cleared in the same commit as the memories. Returns how many were processed. A source
-    /// whose processing errors stays enqueued and is retried once its lease lapses.
+    /// cleared in the same commit as the memories. Returns how many committed. A source whose
+    /// processing errors is logged and left enqueued: it stays leased for the rest of this
+    /// batch (so a poison source can't head-of-line the queue) and is retried once its lease
+    /// lapses. A claim failure aborts the batch, since it means the database is unreachable.
     pub async fn process_pending(
         &self,
         tenant_id: Uuid,
@@ -494,8 +496,14 @@ impl Engine {
             let Some(pending) = self.store.claim_pending_source(tenant_id, lease_secs).await? else {
                 break;
             };
-            self.process_claimed(tenant_id, &pending).await?;
-            processed += 1;
+            match self.process_claimed(tenant_id, &pending).await {
+                Ok(()) => processed += 1,
+                Err(e) => tracing::warn!(
+                    source_id = %pending.id,
+                    error = %e,
+                    "extraction failed; source left for retry after its lease lapses"
+                ),
+            }
         }
         Ok(processed)
     }

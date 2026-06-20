@@ -101,6 +101,34 @@ periodic base backups.
 - After restoring a backup, re-apply any erasures (`purge-actor`) that were honored after the
   backup was taken, or the restore silently reintroduces deleted data.
 
+## Async ingestion (the worker)
+
+By default `POST /v4/memories` extracts and embeds synchronously, so the call blocks on model
+latency. A client that wants a fast accept can send `"dreaming": "dynamic"`: the request
+persists the raw source and returns `"status": "queued"` without calling the models. A
+separate **worker** process then drains the queue out of band.
+
+Run the worker alongside the server (same image, `--features serve`, same DATABASE_URL and
+provider keys):
+
+```bash
+cargo run -p mnestic-server --features serve --bin worker
+```
+
+- `MNESTIC_WORKER_POLL_SECS` (default 5): idle poll interval. When a cycle finds work it loops
+  immediately to drain the backlog; it sleeps only when nothing is pending.
+- `MNESTIC_WORKER_LEASE_SECS` (default 300): how long a claimed source is reserved. Set it
+  above the slowest extraction, or a still-running claim is reclaimed and the work is redone
+  (the duplicate is dropped at commit, so this is wasted effort, not corruption).
+- `MNESTIC_WORKER_BATCH` (default 16): max sources processed per tenant per cycle.
+- Run one or many workers: claims use `FOR UPDATE SKIP LOCKED` plus the lease, so workers take
+  distinct sources. A source whose extraction errors is logged and retried after its lease
+  lapses. On SIGTERM/SIGINT the worker stops after the current cycle.
+
+The worker shares `MNESTIC_DB_MAX_CONNECTIONS`, `MNESTIC_EXTRACT_MODEL`, and the log env with
+the server. Without a worker running, `dreaming: dynamic` sources stay queued and never become
+recallable, so deploy the worker whenever any client uses dynamic mode.
+
 ## Encryption at rest
 
 All persistent state is in Postgres, so encryption at rest is a database/storage-layer

@@ -104,6 +104,86 @@ pub fn db_max_connections(raw: Option<&str>) -> u32 {
         .unwrap_or(DEFAULT_DB_MAX_CONNECTIONS)
 }
 
+/// Install the tracing subscriber shared by the binaries. RUST_LOG sets levels (default
+/// `info`); `MNESTIC_LOG_FORMAT=json` switches to structured output for a log aggregator.
+#[cfg(feature = "serve")]
+pub fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    let json = std::env::var("MNESTIC_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if json {
+        builder.json().init();
+    } else {
+        builder.init();
+    }
+}
+
+/// Open the Postgres pool the binaries use: size from `MNESTIC_DB_MAX_CONNECTIONS` and a
+/// 10s acquire timeout so a saturated pool fails fast instead of hanging.
+#[cfg(feature = "serve")]
+pub async fn connect_pool(dsn: &str) -> Result<sqlx::PgPool, sqlx::Error> {
+    let max_conns = db_max_connections(std::env::var("MNESTIC_DB_MAX_CONNECTIONS").ok().as_deref());
+    tracing::info!(max_connections = max_conns, "connecting database pool");
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_conns)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(dsn)
+        .await
+}
+
+/// Build the cloud providers shared by the server and the worker. The embedder model is fixed
+/// (its 1536 dimension is baked into the halfvec schema); extraction defaults to Opus 4.8 and
+/// `MNESTIC_EXTRACT_MODEL` drops it to a cheaper tier.
+#[cfg(feature = "serve")]
+pub fn build_providers(
+    openai_key: String,
+    anthropic_key: &str,
+) -> (
+    std::sync::Arc<dyn mnestic_core::Embedder>,
+    std::sync::Arc<dyn mnestic_core::Extractor>,
+) {
+    use std::sync::Arc;
+    let embedder: Arc<dyn mnestic_core::Embedder> = Arc::new(mnestic_model::OpenAiEmbedder::new(
+        openai_key,
+        "text-embedding-3-small",
+    ));
+    let mut anthropic = mnestic_model::AnthropicExtractor::new(anthropic_key);
+    if let Ok(model) = std::env::var("MNESTIC_EXTRACT_MODEL") {
+        let model = model.trim();
+        if !model.is_empty() {
+            anthropic = anthropic.with_model(model);
+            tracing::info!(extract_model = model, "extraction model overridden");
+        }
+    }
+    let extractor: Arc<dyn mnestic_core::Extractor> = Arc::new(anthropic);
+    (embedder, extractor)
+}
+
+/// Resolve when the process receives SIGTERM (the orchestrator's stop signal) or SIGINT, so a
+/// server or worker can drain before exiting.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("install ctrl-c handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
 /// Recall fan-out default and cap. Clamping a client value keeps it out of a negative
 /// SQL `LIMIT` (a 500) and bounds how large a single query can get.
 const DEFAULT_LIMIT: i64 = 10;
