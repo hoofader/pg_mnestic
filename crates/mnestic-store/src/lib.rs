@@ -92,6 +92,7 @@ pub struct RecallHit {
     pub confidence: f32,
     pub recorded_at: Option<DateTime<Utc>>,
     pub score: f64,
+    pub metadata: serde_json::Value,
 }
 
 /// Fields for one document chunk insert. Bundled so the insert stays under the
@@ -667,6 +668,11 @@ impl Store {
                 confidence: r.get("confidence"),
                 recorded_at: r.get("recorded_at"),
                 score: r.get("score"),
+                // NOT NULL in schema; tolerate a NULL from a future join/backfill rather
+                // than panic on the recall path. A genuine type mismatch still panics.
+                metadata: r
+                    .get::<Option<serde_json::Value>, _>("metadata")
+                    .unwrap_or_else(|| serde_json::json!({})),
             })
             .collect())
     }
@@ -1023,7 +1029,7 @@ fused AS ( \
   FROM (SELECT id, rnk FROM vec UNION ALL SELECT id, rnk FROM lex) u \
   GROUP BY id \
 ) \
-SELECT m.id, m.content, m.subject, m.attribute, m.value, m.confidence, \
+SELECT m.id, m.content, m.subject, m.attribute, m.value, m.confidence, m.metadata, \
        lower(m.recorded_time) AS recorded_at, \
        (f.rrf \
         * exp(-greatest(0, extract(epoch FROM (coalesce($7, now()) - lower(m.valid_time)))) / 2592000.0) \

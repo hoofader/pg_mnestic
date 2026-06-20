@@ -108,6 +108,10 @@ async fn search_and_profile_endpoints() {
     assert!(memories.contains(&"the user loves climbing"), "search returns the memory, got {memories:?}");
     assert!(results.iter().all(|r| r["similarity"].is_number()), "each result carries a similarity score");
     assert!(results.iter().all(|r| r["updatedAt"].is_string()), "each result carries updatedAt");
+    // sdk-ts SearchMemoriesResponse: top-level timing/total, per-result metadata object.
+    assert!(j["timing"].is_number(), "search carries timing");
+    assert!(j["total"].is_number(), "search carries total");
+    assert!(results.iter().all(|r| r["metadata"].is_object()), "each result carries a metadata object");
 
     // A malformed containerTag is rejected at the edge.
     let resp = app(state.clone())
@@ -142,9 +146,28 @@ async fn search_and_profile_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
-    assert!(j["profile"]["dynamicCtx"].is_array(), "profile body present");
-    let rel: Vec<&str> = j["results"].as_array().unwrap().iter().filter_map(|r| r["memory"].as_str()).collect();
+    // sdk-ts ProfileResponse: profile.static / profile.dynamic, recall under searchResults.
+    assert!(j["profile"]["static"].is_array(), "profile.static present");
+    assert!(j["profile"]["dynamic"].is_array(), "profile.dynamic present");
+    assert!(j["searchResults"]["timing"].is_number(), "searchResults.timing present");
+    assert!(j["searchResults"]["total"].is_number(), "searchResults.total present");
+    let rel: Vec<&str> = j["searchResults"]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["memory"].as_str())
+        .collect();
     assert!(rel.contains(&"the user loves climbing"), "profile query returns relevant memory");
+
+    // Without a query there is no searchResults block (the SDK types it optional).
+    let resp = app(state.clone())
+        .oneshot(post("/v4/profile", "sk-test", r#"{"containerTag":"org:7:user:99"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert!(j["profile"]["static"].is_array(), "profile body present without a query");
+    assert!(j["searchResults"].is_null(), "no searchResults block without a query");
 
     // Read endpoints also require auth.
     let resp = app(state)
