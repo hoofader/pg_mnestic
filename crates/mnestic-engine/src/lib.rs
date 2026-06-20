@@ -11,7 +11,7 @@ use mnestic_core::{
     decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, QueryRewriter,
     Reranker, ResolveAction, Scored,
 };
-use mnestic_store::{NewChunk, NewMemoryFull, Store};
+use mnestic_store::{NewChunk, NewMemoryFull, PendingSource, Store};
 use uuid::Uuid;
 
 mod error;
@@ -46,6 +46,14 @@ pub struct AddResult {
     /// True when this (tenant, custom_id) was already ingested and the pipeline was
     /// skipped. The id fields are empty in that case.
     pub idempotent_skip: bool,
+}
+
+/// What `enqueue` did. `queued` is false on an idempotent repeat (same custom_id already
+/// ingested or enqueued), in which case `source_id` is the prior source.
+#[derive(Debug, Default, Clone)]
+pub struct EnqueueResult {
+    pub source_id: Uuid,
+    pub queued: bool,
 }
 
 /// Confidence added each time an identical fact recurs.
@@ -252,24 +260,7 @@ impl Engine {
             actor_id: actor_id.to_string(),
             container_tags: container_tags.to_vec(),
         };
-        let mut candidates = self.extractor.extract(content, &ctx).await?;
-        // Drop empty-content candidates: they carry no memory and some embedders reject
-        // an empty string in a batch, which would abort the whole ingest. content is the
-        // embed text and the canonical memory, so a blank one has nothing to embed or
-        // store even if it carried a triple (structured-only rows are not a path today).
-        candidates.retain(|c| !c.content.trim().is_empty());
-        let texts: Vec<String> = candidates.iter().map(|c| c.content.clone()).collect();
-        let embeddings = if texts.is_empty() {
-            Vec::new()
-        } else {
-            self.embedder.embed(&texts).await?
-        };
-        if embeddings.len() != candidates.len() {
-            return Err(Error::EmbeddingCountMismatch {
-                expected: candidates.len(),
-                got: embeddings.len(),
-            });
-        }
+        let (candidates, embeddings) = self.extract_and_embed(content, &ctx).await?;
 
         let req = WriteRequest {
             tenant_id,
@@ -307,6 +298,7 @@ impl Engine {
             req.kind,
             req.content,
             req.custom_id,
+            false,
         )
         .await?
         {
@@ -327,6 +319,21 @@ impl Engine {
             }
         };
 
+        let result = self.persist_candidates(&mut tx, req, source_id).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Resolve and persist each candidate against `source_id`, then refresh the actor's
+    /// profile, all on the caller's transaction (the caller commits). Shared by the sync
+    /// write and the async worker, so the worker can mark the source extracted in the same
+    /// commit that writes its memories.
+    async fn persist_candidates(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        req: &WriteRequest<'_>,
+        source_id: Uuid,
+    ) -> Result<AddResult> {
         let mut result = AddResult {
             source_id,
             ..Default::default()
@@ -357,7 +364,7 @@ impl Engine {
             // always inserted (semantic dedup is a later phase).
             let matches = match (&subject, &attribute) {
                 (Some(s), Some(a)) => {
-                    Store::latest_matches_tx(&mut tx, req.tenant_id, req.actor_id, s, a).await?
+                    Store::latest_matches_tx(&mut *tx, req.tenant_id, req.actor_id, s, a).await?
                 }
                 _ => Vec::new(),
             };
@@ -378,15 +385,15 @@ impl Engine {
             match decide(cand, &matches) {
                 ResolveAction::Dedup { id } => {
                     let id = parse_id(&id)?;
-                    Store::bump_confidence_tx(&mut tx, req.tenant_id, id, DEDUP_CONFIDENCE_BUMP).await?;
+                    Store::bump_confidence_tx(&mut *tx, req.tenant_id, id, DEDUP_CONFIDENCE_BUMP).await?;
                     result.deduped.push(id);
                 }
                 ResolveAction::Supersede { prior_ids } => {
-                    apply_supersede(&mut tx, &write, &matches, &prior_ids, &mut result).await?;
+                    apply_supersede(&mut *tx, &write, &matches, &prior_ids, &mut result).await?;
                 }
                 ResolveAction::Insert => {
                     let (vf, vu) = write.interval();
-                    let id = write.insert(&mut tx, true, None, vf, vu).await?;
+                    let id = write.insert(&mut *tx, true, None, vf, vu).await?;
                     result.inserted.push(id);
                 }
             }
@@ -395,7 +402,7 @@ impl Engine {
         // Refresh the actor's profile from the now-current memories, in the same
         // transaction so the cached profile never lags a committed write.
         Store::refresh_profile_tx(
-            &mut tx,
+            &mut *tx,
             req.tenant_id,
             req.actor_id,
             STATIC_CONFIDENCE,
@@ -404,8 +411,147 @@ impl Engine {
         )
         .await?;
 
-        tx.commit().await?;
         Ok(result)
+    }
+
+    /// Extract candidates from raw content and embed their text. Empty-content candidates are
+    /// dropped: they carry no memory and some embedders reject an empty string in a batch,
+    /// which would abort the whole ingest. Shared by the sync write and the async worker.
+    async fn extract_and_embed(
+        &self,
+        content: &str,
+        ctx: &Ctx,
+    ) -> Result<(Vec<Candidate>, Vec<Vec<f32>>)> {
+        let mut candidates = self.extractor.extract(content, ctx).await?;
+        candidates.retain(|c| !c.content.trim().is_empty());
+        let texts: Vec<String> = candidates.iter().map(|c| c.content.clone()).collect();
+        let embeddings = if texts.is_empty() {
+            Vec::new()
+        } else {
+            self.embedder.embed(&texts).await?
+        };
+        if embeddings.len() != candidates.len() {
+            return Err(Error::EmbeddingCountMismatch {
+                expected: candidates.len(),
+                got: embeddings.len(),
+            });
+        }
+        Ok((candidates, embeddings))
+    }
+
+    /// Enqueue raw content for out-of-band extraction (`dreaming: dynamic`): persist the
+    /// source and return without running the model. A worker later extracts it via
+    /// `process_pending`. `queued` is false when this (tenant, custom_id) was already
+    /// ingested or enqueued, matching the sync path's idempotent skip.
+    pub async fn enqueue(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
+        content: &str,
+        kind: &str,
+        custom_id: Option<&str>,
+    ) -> Result<EnqueueResult> {
+        match self
+            .store
+            .enqueue_source(tenant_id, actor_id, container_tags, kind, content, custom_id)
+            .await?
+        {
+            Some(source_id) => Ok(EnqueueResult {
+                source_id,
+                queued: true,
+            }),
+            None => {
+                let mut tx = self.store.begin_tenant(tenant_id).await?;
+                let existing =
+                    Store::source_id_by_custom_id_tx(&mut tx, tenant_id, custom_id.unwrap_or(""))
+                        .await?
+                        .unwrap_or_default();
+                tx.commit().await?;
+                Ok(EnqueueResult {
+                    source_id: existing,
+                    queued: false,
+                })
+            }
+        }
+    }
+
+    /// Process up to `max` pending sources for one tenant. Each is leased for `lease_secs`
+    /// (so a crashed worker's claim is reclaimable), extracted, and persisted; the flag is
+    /// cleared in the same commit as the memories. Returns how many were processed. A source
+    /// whose processing errors stays enqueued and is retried once its lease lapses.
+    pub async fn process_pending(
+        &self,
+        tenant_id: Uuid,
+        lease_secs: i64,
+        max: usize,
+    ) -> Result<usize> {
+        // A non-positive lease would make a just-claimed source immediately reclaimable, so a
+        // pair of workers could both grab it; keep at least a second of exclusivity.
+        let lease_secs = lease_secs.max(1);
+        let mut processed = 0;
+        for _ in 0..max {
+            let Some(pending) = self.store.claim_pending_source(tenant_id, lease_secs).await? else {
+                break;
+            };
+            self.process_claimed(tenant_id, &pending).await?;
+            processed += 1;
+        }
+        Ok(processed)
+    }
+
+    async fn process_claimed(&self, tenant_id: Uuid, pending: &PendingSource) -> Result<()> {
+        let ctx = Ctx {
+            actor_id: pending.actor_id.clone(),
+            container_tags: pending.container_tags.clone(),
+        };
+        let (candidates, embeddings) = self.extract_and_embed(&pending.content, &ctx).await?;
+        // kind is read only by source insertion, which already ran at enqueue, so it is inert
+        // here.
+        let req = WriteRequest {
+            tenant_id,
+            actor_id: &pending.actor_id,
+            container_tags: &pending.container_tags,
+            content: &pending.content,
+            kind: "conversation",
+            custom_id: None,
+            as_of: None,
+            candidates: &candidates,
+            embeddings: &embeddings,
+        };
+        for attempt in 0..MAX_CONFLICT_RETRIES {
+            // Ok(_) covers both "we committed" and "we lost the claim and rolled back": either
+            // way this source is handled (by us or the reclaiming worker), so do not retry.
+            match self.persist_into_source(&req, pending.id, pending.claimed_at).await {
+                Ok(_) => return Ok(()),
+                Err(e) if e.is_transient_conflict() && attempt + 1 < MAX_CONFLICT_RETRIES => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::ConflictRetriesExhausted(MAX_CONFLICT_RETRIES))
+    }
+
+    /// Persist a claimed source's candidates and clear its extraction flag in one
+    /// transaction, so the source is marked done exactly when its memories commit. Returns
+    /// false (and rolls back the writes) when the claim was lost mid-extraction: another
+    /// worker reclaimed the source after the lease lapsed, so this pass's memories would be
+    /// duplicates and are discarded.
+    async fn persist_into_source(
+        &self,
+        req: &WriteRequest<'_>,
+        source_id: Uuid,
+        claimed_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let mut tx = self.store.begin_tenant(req.tenant_id).await?;
+        self.persist_candidates(&mut tx, req, source_id).await?;
+        let still_ours =
+            Store::mark_source_extracted_tx(&mut tx, req.tenant_id, source_id, claimed_at).await?;
+        if still_ours {
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
+        Ok(still_ours)
     }
 
     /// Read the actor's cached profile (durable facts plus recent context). Returns
@@ -485,6 +631,7 @@ impl Engine {
             "document",
             content,
             custom_id,
+            false,
         )
         .await?
         {

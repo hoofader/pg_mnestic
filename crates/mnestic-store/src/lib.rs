@@ -55,6 +55,19 @@ pub struct Profile {
     pub refreshed_at: Option<DateTime<Utc>>,
 }
 
+/// A source claimed for out-of-band extraction: the raw content plus the scope it was
+/// enqueued under, so the worker can run the same pipeline the sync path runs inline.
+/// `claimed_at` is the lease stamp; the worker presents it back at mark time to prove it
+/// still holds the claim (a reclaim by another worker would have overwritten it).
+#[derive(Debug, Clone)]
+pub struct PendingSource {
+    pub id: Uuid,
+    pub actor_id: String,
+    pub container_tags: Vec<String>,
+    pub content: String,
+    pub claimed_at: DateTime<Utc>,
+}
+
 /// Inputs to hybrid recall, bundled so `recall_memories` stays under the argument-count lint.
 pub struct RecallParams<'a> {
     pub tenant_id: Uuid,
@@ -265,6 +278,7 @@ impl Store {
     /// Persist the raw item to the audit trail. Returns None when a row with this
     /// (tenant, custom_id) already exists, so the caller can treat the add as an
     /// idempotent no-op instead of re-running the pipeline.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_source_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant_id: Uuid,
@@ -273,11 +287,13 @@ impl Store {
         kind: &str,
         content: &str,
         custom_id: Option<&str>,
+        // true for the async path: the row is enqueued and a worker extracts it later.
+        needs_extraction: bool,
     ) -> Result<Option<Uuid>> {
         let id: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO mnestic_source \
-               (tenant_id, actor_id, container_tags, kind, raw, custom_id) \
-             VALUES ($1, $2, $3, $4, jsonb_build_object('text', $5::text), $6) \
+               (tenant_id, actor_id, container_tags, kind, raw, custom_id, needs_extraction) \
+             VALUES ($1, $2, $3, $4, jsonb_build_object('text', $5::text), $6, $7) \
              ON CONFLICT (tenant_id, custom_id) DO NOTHING \
              RETURNING id",
         )
@@ -287,9 +303,99 @@ impl Store {
         .bind(kind)
         .bind(content)
         .bind(custom_id)
+        .bind(needs_extraction)
         .fetch_optional(&mut **tx)
         .await?;
         Ok(id)
+    }
+
+    /// Enqueue a source for out-of-band extraction (the `dreaming: dynamic` path): persist the
+    /// raw content with `needs_extraction = true` and return without running the model. None
+    /// means this (tenant, custom_id) was already ingested, so the caller treats it as a skip.
+    pub async fn enqueue_source(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        container_tags: &[String],
+        kind: &str,
+        content: &str,
+        custom_id: Option<&str>,
+    ) -> Result<Option<Uuid>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let id =
+            Self::insert_source_tx(&mut tx, tenant_id, actor_id, container_tags, kind, content, custom_id, true)
+                .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Lease-claim one pending source for a tenant: stamp `claimed_at` so concurrent workers
+    /// skip it, and return its content for extraction. A claim older than `lease_secs` is
+    /// considered abandoned and reclaimable. `FOR UPDATE SKIP LOCKED` lets parallel workers
+    /// claim distinct rows without blocking. Returns None when nothing is pending.
+    pub async fn claim_pending_source(
+        &self,
+        tenant_id: Uuid,
+        lease_secs: i64,
+    ) -> Result<Option<PendingSource>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let row = sqlx::query(
+            "UPDATE mnestic_source SET claimed_at = now() \
+             WHERE id = ( \
+               SELECT id FROM mnestic_source \
+               WHERE tenant_id = $1 AND needs_extraction \
+                 AND (claimed_at IS NULL OR claimed_at < now() - make_interval(secs => $2)) \
+               ORDER BY ingested_at \
+               FOR UPDATE SKIP LOCKED \
+               LIMIT 1 \
+             ) \
+             RETURNING id, actor_id, container_tags, raw->>'text' AS content, claimed_at",
+        )
+        .bind(tenant_id)
+        .bind(lease_secs as f64)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|r| PendingSource {
+            id: r.get("id"),
+            actor_id: r.get("actor_id"),
+            container_tags: r.get("container_tags"),
+            content: r.get::<Option<String>, _>("content").unwrap_or_default(),
+            claimed_at: r.get("claimed_at"),
+        }))
+    }
+
+    /// Clear the extraction flag once a claimed source has been processed, but only if this
+    /// worker still holds the claim: the `claimed_at = $3` guard fails if another worker
+    /// reclaimed the source after its lease lapsed mid-extraction. Returns false in that case
+    /// so the caller rolls back its duplicate writes and lets the reclaiming worker win.
+    pub async fn mark_source_extracted_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        source_id: Uuid,
+        claimed_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let affected = sqlx::query(
+            "UPDATE mnestic_source SET needs_extraction = false, claimed_at = NULL \
+             WHERE tenant_id = $1 AND id = $2 AND claimed_at = $3",
+        )
+        .bind(tenant_id)
+        .bind(source_id)
+        .bind(claimed_at)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        Ok(affected > 0)
+    }
+
+    /// All tenant ids, off RLS like the other registry reads. A worker iterates these to find
+    /// pending work, since the per-tenant `needs_extraction` rows are not visible across the
+    /// RLS boundary.
+    pub async fn list_tenant_ids(&self) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar("SELECT id FROM mnestic_tenant")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(ids)
     }
 
     /// Resolve an existing source id by its caller-supplied custom_id.
@@ -1009,6 +1115,10 @@ mod tests {
         (
             2,
             "9cfe123f3469bdc2a878125c22f3d8ae2a712b2fd8568b3000dd224bf570fb3eb6f6a9bfafeef0286a2577fc269dce9c",
+        ),
+        (
+            3,
+            "1e6096be8b4b7bbc1d14a2c45e763379dfe35d95d0402b6998aadeb3744e9ed5ac9d4cf68f3457dc558da9d7e9784919",
         ),
     ];
 
