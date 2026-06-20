@@ -170,9 +170,105 @@ async fn search_and_profile_endpoints() {
     assert!(j["searchResults"].is_null(), "no searchResults block without a query");
 
     // Read endpoints also require auth.
-    let resp = app(state)
+    let resp = app(state.clone())
         .oneshot(post("/v4/search", "nope", r#"{"q":"x","containerTag":"alice"}"#))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Seed two memories under one actor with different metadata; the `filters` tree retains
+    // only the matching one. Both share the term "hiking" so recall returns both candidates.
+    engine
+        .add_at(
+            tenant,
+            "user:fil",
+            &["org:9".to_string()],
+            "hiking with the infra team",
+            "conversation",
+            None,
+            None,
+            &serde_json::json!({"team": "infra"}),
+        )
+        .await
+        .unwrap();
+    engine
+        .add_at(
+            tenant,
+            "user:fil",
+            &["org:9".to_string()],
+            "hiking with the sales team",
+            "conversation",
+            None,
+            None,
+            &serde_json::json!({"team": "sales"}),
+        )
+        .await
+        .unwrap();
+
+    // An AND filter on team=infra keeps only the infra memory.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"hiking","containerTag":"org:9:user:fil","filters":{"AND":[{"key":"team","value":"infra"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let results = j["results"].as_array().unwrap();
+    let teams: Vec<&str> =
+        results.iter().filter_map(|r| r["metadata"]["team"].as_str()).collect();
+    assert_eq!(teams, vec!["infra"], "filter keeps only the infra memory, got {teams:?}");
+
+    // `negate` flips the same predicate, keeping only the non-infra memory.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"hiking","containerTag":"org:9:user:fil","filters":{"AND":[{"key":"team","value":"infra","negate":true}]}}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    let teams: Vec<&str> = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["metadata"]["team"].as_str())
+        .collect();
+    assert_eq!(teams, vec!["sales"], "negated filter keeps only the non-infra memory, got {teams:?}");
+
+    // A filter that matches nothing returns an empty result set, not an error.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"hiking","containerTag":"org:9:user:fil","filters":{"AND":[{"key":"team","value":"nobody"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["results"].as_array().unwrap().len(), 0, "non-matching filter returns empty");
+    assert_eq!(j["total"], 0, "total reflects the filtered set");
+
+    // The same filter applies to /v4/profile's recall results.
+    let resp = app(state)
+        .oneshot(post(
+            "/v4/profile",
+            "sk-test",
+            r#"{"containerTag":"org:9:user:fil","q":"hiking","filters":{"AND":[{"key":"team","value":"infra"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let teams: Vec<&str> = j["searchResults"]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["metadata"]["team"].as_str())
+        .collect();
+    assert_eq!(teams, vec!["infra"], "profile filter keeps only the infra memory, got {teams:?}");
 }

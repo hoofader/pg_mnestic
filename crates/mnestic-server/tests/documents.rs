@@ -152,9 +152,62 @@ async fn ingest_and_search_documents_endpoints() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let resp = app(state)
+    let resp = app(state.clone())
         .oneshot(post("/v3/search", "nope", r#"{"q":"x","containerTag":"user:42"}"#))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Ingest two documents sharing a search term but carrying different metadata, so the
+    // `filters` tree can retain one and drop the other.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v3/documents",
+            "sk-test",
+            r#"{"content":"quantum entanglement primer for the alpha team","containerTag":"user:42","customId":"qa","metadata":{"team":"alpha"}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v3/documents",
+            "sk-test",
+            r#"{"content":"quantum entanglement primer for the beta team","containerTag":"user:42","customId":"qb","metadata":{"team":"beta"}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Filtering on team=alpha returns only the alpha document.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v3/search",
+            "sk-test",
+            r#"{"q":"quantum entanglement","containerTag":"user:42","filters":{"AND":[{"key":"team","value":"alpha"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let teams: Vec<&str> = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["metadata"]["team"].as_str())
+        .collect();
+    assert_eq!(teams, vec!["alpha"], "doc filter keeps only the alpha document, got {teams:?}");
+
+    // A non-matching filter returns no documents.
+    let resp = app(state)
+        .oneshot(post(
+            "/v3/search",
+            "sk-test",
+            r#"{"q":"quantum entanglement","containerTag":"user:42","filters":{"AND":[{"key":"team","value":"gamma"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["results"].as_array().unwrap().len(), 0, "non-matching doc filter returns empty");
 }

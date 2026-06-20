@@ -16,6 +16,7 @@ use tracing::Level;
 
 pub mod auth;
 pub mod container_tag;
+pub mod filter;
 pub mod keys;
 mod directory;
 mod documents;
