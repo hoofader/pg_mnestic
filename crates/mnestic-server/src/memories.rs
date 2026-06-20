@@ -142,6 +142,142 @@ pub async fn forget_memory(
     Err(ApiError::BadRequest("forget requires id or content".into()))
 }
 
+// The SDK's `client.memories.updateMemory` -> PATCH /v4/memories. A versioned edit:
+// `newContent` becomes a new memory version that supersedes the prior, identified by `id`.
+// `content` is part of the wire contract but unused here (we identify by id alone).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemoryRequest {
+    #[serde(default)]
+    pub container_tag: Option<String>,
+    #[serde(default)]
+    pub container_tags: Option<Vec<String>>,
+    pub new_content: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    // Part of the SDK wire contract, but we identify the target by `id` alone, so the
+    // accepted value is never read. Kept so a client sending it gets a 200, not a 422.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub forget_after: Option<String>,
+    #[serde(default)]
+    pub forget_reason: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub temporal_context: Option<TemporalContext>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemporalContext {
+    #[serde(default)]
+    pub document_date: Option<String>,
+    #[serde(default)]
+    pub event_date: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemoryResponse {
+    pub id: String,
+    pub created_at: String,
+    pub forget_after: Option<String>,
+    pub forget_reason: Option<String>,
+    pub memory: String,
+    pub parent_memory_id: Option<String>,
+    pub root_memory_id: Option<String>,
+    pub version: i32,
+}
+
+pub async fn update_memory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateMemoryRequest>,
+) -> Result<Json<UpdateMemoryResponse>, ApiError> {
+    let tenant = authenticate_request(&state, &headers).await?;
+    let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
+    let Scope { actor_id, container_tags: _ } = parse_container_tag(&tag);
+
+    let new_content = req.new_content.trim();
+    if new_content.is_empty() {
+        return Err(ApiError::BadRequest("newContent is empty".into()));
+    }
+
+    let id_str = req
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("id is required".into()))?;
+    let id = uuid::Uuid::parse_str(id_str)
+        .map_err(|_| ApiError::BadRequest("id is not a valid memory id".into()))?;
+
+    let forget_after = parse_rfc3339_opt(req.forget_after.as_deref(), "forgetAfter")?;
+    let (document_date, event_date) = match req.temporal_context {
+        Some(tc) => {
+            let doc = parse_rfc3339_opt(tc.document_date.as_deref(), "temporalContext.documentDate")?;
+            // The schema's event_date is a single timestamptz; take the first element.
+            let first = tc.event_date.as_ref().and_then(|v| v.first()).map(String::as_str);
+            let evt = parse_rfc3339_opt(first, "temporalContext.eventDate")?;
+            (doc, evt)
+        }
+        None => (None, None),
+    };
+
+    // An explicit null maps to the empty object, matching the column's NOT NULL default.
+    let metadata = match req.metadata {
+        Some(serde_json::Value::Null) | None => serde_json::json!({}),
+        Some(v) => v,
+    };
+
+    let updated = state
+        .engine
+        .update_memory(
+            tenant,
+            &actor_id,
+            id,
+            new_content,
+            forget_after,
+            req.forget_reason.as_deref(),
+            &metadata,
+            document_date,
+            event_date,
+        )
+        .await?;
+
+    let Some(v) = updated else {
+        return Err(ApiError::NotFound);
+    };
+    Ok(Json(UpdateMemoryResponse {
+        id: v.id.to_string(),
+        created_at: v.created_at.to_rfc3339(),
+        forget_after: v.forget_after.map(|t| t.to_rfc3339()),
+        forget_reason: v.forget_reason,
+        memory: new_content.to_string(),
+        parent_memory_id: Some(v.parent_memory_id.to_string()),
+        root_memory_id: Some(v.root_memory_id.to_string()),
+        version: v.version,
+    }))
+}
+
+/// Parse an optional RFC3339 timestamp, treating an explicit JSON null (already mapped to
+/// None by the caller) and an absent field alike. A present but unparseable value is a 400,
+/// named so the caller knows which field tripped.
+fn parse_rfc3339_opt(
+    raw: Option<&str>,
+    field: &str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
+    match raw {
+        Some(s) => chrono::DateTime::parse_from_rfc3339(s)
+            .map(|t| Some(t.with_timezone(&chrono::Utc)))
+            .map_err(|_| ApiError::BadRequest(format!("{field} is not a valid RFC3339 timestamp"))),
+        None => Ok(None),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Message {
     pub role: String,

@@ -144,6 +144,20 @@ pub struct NewMemoryFull<'a> {
     pub forget_after: Option<DateTime<Utc>>,
 }
 
+/// The new row produced by a versioned update, with the lineage fields the SDK's
+/// `updateMemory` response carries: `parent_memory_id` is the row this one supersedes,
+/// `root_memory_id` the first version in the chain.
+#[derive(Debug, Clone)]
+pub struct MemoryVersion {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub version: i32,
+    pub root_memory_id: Uuid,
+    pub parent_memory_id: Uuid,
+    pub forget_after: Option<DateTime<Utc>>,
+    pub forget_reason: Option<String>,
+}
+
 impl Store {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -512,6 +526,125 @@ impl Store {
         .fetch_one(&mut **tx)
         .await?;
         Ok(id)
+    }
+
+    /// Versioned update (the SDK's PATCH /v4/memories): insert a new content-only row
+    /// carrying `content`, then mark the prior row superseded so recall and the profile
+    /// see only the new version. The lineage is preserved (`supersedes_id` -> prior,
+    /// `root_memory_id` -> the chain's first row), so history stays reachable. Returns
+    /// `Ok(None)` when no active latest row matches (tenant, actor, prior_id), so the
+    /// caller can surface a 404 rather than insert an orphan version.
+    ///
+    /// The new row inherits the prior's container scope. It is unstructured (no triple),
+    /// so it does not engage the single-valued EXCLUDE; an edit is a belief change, not a
+    /// new bitemporal segment, so it keeps the default validity (open from now).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn supersede_with_new_version_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        actor_id: &str,
+        prior_id: Uuid,
+        content: &str,
+        embedding: Option<&[f32]>,
+        forget_after: Option<DateTime<Utc>>,
+        forget_reason: Option<&str>,
+        metadata: &serde_json::Value,
+        document_date: Option<DateTime<Utc>>,
+        event_date: Option<DateTime<Utc>>,
+    ) -> Result<Option<MemoryVersion>> {
+        // FOR UPDATE serializes concurrent edits of the same memory: a second PATCH blocks
+        // here, then re-reads the now-superseded prior, fails the is_latest predicate, and
+        // returns None. Without it both could read is_latest, both insert a v2, and the chain
+        // would end with two latest rows.
+        let prior = sqlx::query(
+            "SELECT version, root_memory_id, container_tags, is_static, mem_type, confidence \
+             FROM mnestic_memory \
+             WHERE tenant_id = $1 AND actor_id = $2 AND id = $3 \
+               AND is_latest AND status = 'active' \
+             FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(prior_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(prior) = prior else {
+            return Ok(None);
+        };
+        let prior_version: i32 = prior.get("version");
+        // The chain root is the prior's root when it is itself a later version, else the
+        // prior id (it is the first version, so it roots the chain).
+        let root = prior
+            .get::<Option<Uuid>, _>("root_memory_id")
+            .unwrap_or(prior_id);
+        let container_tags: Vec<String> = prior.get("container_tags");
+        // Carry the class forward: an edit changes the wording, not whether the memory is a
+        // durable profile fact. Dropping these would demote a static/preference memory to a
+        // default dynamic fact and silently push it out of the profile. The triple
+        // (subject/attribute/value) is left NULL because the new free text is not re-extracted,
+        // which also keeps the row off the single-valued EXCLUDE.
+        let is_static: bool = prior.get("is_static");
+        let mem_type: String = prior.get("mem_type");
+        let confidence: f32 = prior.get("confidence");
+        let new_version = prior_version + 1;
+
+        // valid_time stays open from now: an edit is a belief change, not a claim about when
+        // the fact was true, so document_date/event_date are recorded but do not move recency.
+        let embedding = embedding.map(vec_literal);
+        let row = sqlx::query(
+            "INSERT INTO mnestic_memory \
+               (tenant_id, actor_id, container_tags, content, embedding, metadata, \
+                version, root_memory_id, supersedes_id, is_latest, status, \
+                forget_after, forget_reason, document_date, event_date, \
+                single_valued, mem_type, is_static, confidence) \
+             VALUES ($1, $2, $3, $4, $5::halfvec, $6, $7, $8, $9, true, 'active', \
+                     $10, $11, $12, $13, false, $14, $15, $16) \
+             RETURNING id, created_at",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(&container_tags)
+        .bind(content)
+        .bind(embedding)
+        .bind(metadata)
+        .bind(new_version)
+        .bind(root)
+        .bind(prior_id)
+        .bind(forget_after)
+        .bind(forget_reason)
+        .bind(document_date)
+        .bind(event_date)
+        .bind(&mem_type)
+        .bind(is_static)
+        .bind(confidence)
+        .fetch_one(&mut **tx)
+        .await?;
+        let id: Uuid = row.get("id");
+        let created_at: DateTime<Utc> = row.get("created_at");
+
+        // Close the prior's system time only when that yields a non-empty range, so a
+        // backward clock never collapses it; event time (`valid_time`) is left intact.
+        sqlx::query(
+            "UPDATE mnestic_memory SET is_latest = false, status = 'superseded', \
+                    recorded_time = CASE WHEN now() > lower(recorded_time) \
+                                         THEN tstzrange(lower(recorded_time), now()) \
+                                         ELSE recorded_time END \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(prior_id)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(Some(MemoryVersion {
+            id,
+            created_at,
+            version: new_version,
+            root_memory_id: root,
+            parent_memory_id: prior_id,
+            forget_after,
+            forget_reason: forget_reason.map(str::to_string),
+        }))
     }
 
     /// Close a prior row's validity at `at` and mark it superseded. Fires only when
@@ -1143,6 +1276,10 @@ mod tests {
         (
             3,
             "1e6096be8b4b7bbc1d14a2c45e763379dfe35d95d0402b6998aadeb3744e9ed5ac9d4cf68f3457dc558da9d7e9784919",
+        ),
+        (
+            4,
+            "231ddb71199abdf22c74ce9c72f53032162e6a8e5e264f742abc21272afc1939d9c8a8d0ef0c5826aeac1ebb8fcfae3e",
         ),
     ];
 

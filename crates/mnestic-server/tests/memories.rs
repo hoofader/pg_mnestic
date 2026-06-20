@@ -56,6 +56,16 @@ fn delete_req(token: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn patch_req(token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri("/v4/memories")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -172,6 +182,91 @@ async fn add_memory_endpoint() {
         .unwrap();
     let j = body_json(resp).await;
     assert_eq!(j["status"], "skipped", "repeat customId is skipped");
+
+    // PATCH /v4/memories updates a memory as a new version (the SDK's updateMemory). Add a
+    // fresh memory, find its id via recall, then patch it.
+    let resp = app(state.clone())
+        .oneshot(post(
+            Some("sk-test"),
+            r#"{"content":"the user loves hiking","containerTag":"org:7:user:99","customId":"p1"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let hits = engine.recall(tenant, "user:99", "hiking", 10).await.unwrap();
+    let prior_id = hits
+        .iter()
+        .find(|h| h.content.as_deref() == Some("the user loves hiking"))
+        .expect("the added memory is recallable")
+        .id
+        .to_string();
+
+    let resp = app(state.clone())
+        .oneshot(patch_req(
+            "sk-test",
+            &format!(
+                r#"{{"containerTag":"org:7:user:99","id":"{prior_id}","newContent":"the user now prefers bouldering","metadata":{{"k":"v"}}}}"#
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["version"], 2, "a first edit is version 2");
+    assert_eq!(j["parentMemoryId"], prior_id, "parent is the prior row");
+    assert!(j["rootMemoryId"].is_string(), "rootMemoryId is a string");
+    assert_eq!(j["memory"], "the user now prefers bouldering");
+    assert!(j["createdAt"].is_string(), "createdAt is a string");
+
+    // The edit carries the memory's class forward (an edit must not demote a static or typed
+    // memory to a default dynamic fact). The test role is superuser, so it reads past RLS.
+    let new_id = j["id"].as_str().unwrap();
+    let class = |id: &str| {
+        let p = pool.clone();
+        let id = id.to_string();
+        async move {
+            sqlx::query_as::<_, (bool, String, f32)>(
+                "SELECT is_static, mem_type, confidence FROM mnestic_memory WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(&p)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(class(&prior_id).await, class(new_id).await, "edit preserves the memory class");
+
+    // The new content is recallable and the prior is superseded out of recall.
+    let after = engine.recall(tenant, "user:99", "bouldering", 10).await.unwrap();
+    assert!(
+        after.iter().any(|h| h.content.as_deref() == Some("the user now prefers bouldering")),
+        "the new version is recallable"
+    );
+    assert!(
+        !after.iter().any(|h| h.content.as_deref() == Some("the user loves hiking")),
+        "the superseded prior should not appear in recall"
+    );
+
+    // PATCH with no id is a 400; patching a random (unknown) id is a 404.
+    let resp = app(state.clone())
+        .oneshot(patch_req(
+            "sk-test",
+            r#"{"containerTag":"org:7:user:99","newContent":"x"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "patch needs an id");
+    let resp = app(state.clone())
+        .oneshot(patch_req(
+            "sk-test",
+            &format!(
+                r#"{{"containerTag":"org:7:user:99","id":"{}","newContent":"x"}}"#,
+                Uuid::new_v4()
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "unknown id is a 404");
 
     // Plural containerTags is accepted as the same scope shape.
     let resp = app(state.clone())

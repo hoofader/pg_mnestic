@@ -43,7 +43,12 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/v4/memories", post(memories::add_memory).delete(memories::forget_memory))
+        .route(
+            "/v4/memories",
+            post(memories::add_memory)
+                .delete(memories::forget_memory)
+                .patch(memories::update_memory),
+        )
         .route("/v4/memory", post(memory_tool::memory_tool))
         .route("/v4/conversations", post(memories::ingest_conversation))
         .route("/v4/search", post(query::search))

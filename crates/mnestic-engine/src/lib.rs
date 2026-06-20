@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 mod error;
 pub use error::{Error, Result};
-pub use mnestic_store::{ChunkHit, Profile, RecallHit};
+pub use mnestic_store::{ChunkHit, MemoryVersion, Profile, RecallHit};
 
 /// An actor's durable profile plus the memories most relevant to a query. Backs the
 /// supermemory `/v4/profile` shape (profile, optionally with query-scoped results).
@@ -848,6 +848,58 @@ impl Engine {
         }
         tx.commit().await?;
         Ok(forgotten)
+    }
+
+    /// Versioned update (the SDK's PATCH /v4/memories): supersede `prior_id` with a new
+    /// content row carrying `new_content`, preserving the prior as history. Returns
+    /// `Ok(None)` when no active latest row matches the actor and id, so the handler maps
+    /// it to a 404. The new content is embedded so it is recallable; the profile refresh
+    /// shares the transaction, so the cached profile never lags the committed edit.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_memory(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        prior_id: Uuid,
+        new_content: &str,
+        forget_after: Option<DateTime<Utc>>,
+        forget_reason: Option<&str>,
+        metadata: &serde_json::Value,
+        document_date: Option<DateTime<Utc>>,
+        event_date: Option<DateTime<Utc>>,
+    ) -> Result<Option<MemoryVersion>> {
+        let mut e = self.embedder.embed(std::slice::from_ref(&new_content.to_string())).await?;
+        let v = e.pop().unwrap_or_default();
+        check_embedding_dim(&v)?;
+
+        let mut tx = self.store.begin_tenant(tenant_id).await?;
+        let updated = Store::supersede_with_new_version_tx(
+            &mut tx,
+            tenant_id,
+            actor_id,
+            prior_id,
+            new_content,
+            Some(&v),
+            forget_after,
+            forget_reason,
+            metadata,
+            document_date,
+            event_date,
+        )
+        .await?;
+        if updated.is_some() {
+            Store::refresh_profile_tx(
+                &mut tx,
+                tenant_id,
+                actor_id,
+                STATIC_CONFIDENCE,
+                STATIC_FACTS_CAP,
+                DYNAMIC_CTX_CAP,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(updated)
     }
 }
 

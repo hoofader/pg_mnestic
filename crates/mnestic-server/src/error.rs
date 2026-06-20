@@ -11,6 +11,7 @@ use axum::Json;
 pub enum ApiError {
     Unauthorized,
     BadRequest(String),
+    NotFound,
     TooManyRequests,
     Internal(String),
 }
@@ -32,6 +33,7 @@ impl IntoResponse for ApiError {
         let (status, msg) = match self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::TooManyRequests => {
                 (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string())
             }
