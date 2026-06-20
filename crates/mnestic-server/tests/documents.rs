@@ -94,7 +94,7 @@ async fn ingest_and_search_documents_endpoints() {
         .oneshot(post(
             "/v3/documents",
             "sk-test",
-            r#"{"content":"The mitochondria powerhouse note is unique here.","containerTag":"user:42","title":"Cells","customId":"d1"}"#,
+            r#"{"content":"The mitochondria powerhouse note is unique here.","containerTag":"user:42","title":"Cells","customId":"d1","metadata":{"source":"wiki","page":7}}"#,
         ))
         .await
         .unwrap();
@@ -123,6 +123,9 @@ async fn ingest_and_search_documents_endpoints() {
             .any(|c| c["content"].as_str().is_some_and(|m| m.contains("mitochondria")))),
         "document search returns the matching chunk, got {hits:?}"
     );
+    // The metadata sent at ingest round-trips on the document result.
+    let doc = hits.iter().find(|h| h["metadata"]["source"] == "wiki").expect("doc carries metadata");
+    assert_eq!(doc["metadata"]["page"], 7, "metadata values preserved");
     assert!(hits.iter().all(|h| {
         h["documentId"].is_string()
             && h["score"].is_number()

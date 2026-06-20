@@ -683,6 +683,7 @@ impl Store {
 
     /// Insert a document row (provenance + metadata) in the caller's tx and return its
     /// id. Chunks are inserted separately with `insert_chunk_tx`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_document_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant_id: Uuid,
@@ -691,11 +692,12 @@ impl Store {
         container_tags: &[String],
         title: Option<&str>,
         uri: Option<&str>,
+        metadata: &serde_json::Value,
     ) -> Result<Uuid> {
         let id: Uuid = sqlx::query_scalar(
             "INSERT INTO mnestic_document \
-               (tenant_id, actor_id, source_id, container_tags, title, uri) \
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+               (tenant_id, actor_id, source_id, container_tags, title, uri, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
         )
         .bind(tenant_id)
         .bind(actor_id)
@@ -703,6 +705,7 @@ impl Store {
         .bind(container_tags)
         .bind(title)
         .bind(uri)
+        .bind(metadata)
         .fetch_one(&mut **tx)
         .await?;
         Ok(id)

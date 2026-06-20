@@ -69,7 +69,7 @@ async fn export_then_purge_actor() {
         .await
         .expect("add user:1 memory");
     engine
-        .ingest_document(tenant, "user:1", &[], Some("Notes"), None, "a reference document for user one", Some("d1"))
+        .ingest_document(tenant, "user:1", &[], Some("Notes"), None, "a reference document for user one", Some("d1"), &serde_json::json!({}))
         .await
         .expect("ingest user:1 document");
     engine.add(tenant, "user:2", &[], "I work at Globex", "conversation", None)

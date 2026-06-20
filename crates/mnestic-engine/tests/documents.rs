@@ -73,7 +73,7 @@ async fn ingest_and_search_documents() {
     let content = format!("{filler} The mitochondria powerhouse note is unique here. {filler}");
 
     let res = engine
-        .ingest_document(tenant, "u", &tags, Some("Cell Biology"), Some("file://cells"), &content, Some("doc1"))
+        .ingest_document(tenant, "u", &tags, Some("Cell Biology"), Some("file://cells"), &content, Some("doc1"), &serde_json::json!({}))
         .await
         .unwrap();
     assert!(!res.idempotent_skip, "first ingest is not a skip");
@@ -91,7 +91,7 @@ async fn ingest_and_search_documents() {
 
     // Idempotent on custom_id: a repeat writes no new document or chunks.
     let again = engine
-        .ingest_document(tenant, "u", &tags, Some("Cell Biology"), None, &content, Some("doc1"))
+        .ingest_document(tenant, "u", &tags, Some("Cell Biology"), None, &content, Some("doc1"), &serde_json::json!({}))
         .await
         .unwrap();
     assert!(again.idempotent_skip, "repeat ingest is a skip");
@@ -106,7 +106,7 @@ async fn ingest_and_search_documents() {
 
     // Empty content is rejected, not stored as a chunk-less document.
     assert!(
-        engine.ingest_document(tenant, "u", &tags, None, None, "   \n ", Some("empty")).await.is_err(),
+        engine.ingest_document(tenant, "u", &tags, None, None, "   \n ", Some("empty"), &serde_json::json!({})).await.is_err(),
         "empty content is rejected"
     );
 }

@@ -15,6 +15,10 @@ use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
 use crate::{clamp_limit, resolve_container_tag, AppState};
 
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestRequest {
@@ -29,6 +33,10 @@ pub struct IngestRequest {
     pub uri: Option<String>,
     #[serde(default)]
     pub custom_id: Option<String>,
+    /// Caller key-value metadata, stored on the document and returned by `/v3/search`.
+    /// Stored as-is; the supermemory shape (string/number/boolean/string[]) is not enforced.
+    #[serde(default = "empty_object")]
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -44,11 +52,16 @@ pub struct IngestResponse {
 pub async fn ingest_document(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<IngestRequest>,
+    Json(mut req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, ApiError> {
     let tenant = authenticate_request(&state, &headers).await?;
     if req.content.trim().is_empty() {
         return Err(ApiError::BadRequest("content is empty".into()));
+    }
+    // An explicit `metadata: null` bypasses the serde default; map it to {} so it never
+    // reaches the NOT NULL column as a SQL NULL.
+    if req.metadata.is_null() {
+        req.metadata = empty_object();
     }
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
@@ -63,6 +76,7 @@ pub async fn ingest_document(
             req.uri.as_deref(),
             &req.content,
             req.custom_id.as_deref(),
+            &req.metadata,
         )
         .await?;
 

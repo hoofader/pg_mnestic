@@ -606,6 +606,7 @@ impl Engine {
         uri: Option<&str>,
         content: &str,
         custom_id: Option<&str>,
+        metadata: &serde_json::Value,
     ) -> Result<DocumentResult> {
         // Reject an empty document up front: it would store a source and document row
         // with no chunks, searchable by nothing.
@@ -666,6 +667,7 @@ impl Engine {
             container_tags,
             title,
             uri,
+            metadata,
         )
         .await?;
 

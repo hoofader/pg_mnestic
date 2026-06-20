@@ -171,7 +171,7 @@ async fn mcp_handshake_and_tools() {
 
     // memory-graph lists the actor's documents.
     engine
-        .ingest_document(tenant, "user:9", &[], Some("Notes"), None, "some reference document content", Some("d1"))
+        .ingest_document(tenant, "user:9", &[], Some("Notes"), None, "some reference document content", Some("d1"), &serde_json::json!({}))
         .await
         .unwrap();
     let resp = app(state.clone())

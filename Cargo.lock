@@ -1422,6 +1422,7 @@ dependencies = [
  "mnestic-core",
  "mnestic-model",
  "mnestic-store",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "thiserror",
