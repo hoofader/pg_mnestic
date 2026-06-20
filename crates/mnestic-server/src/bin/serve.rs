@@ -16,7 +16,9 @@
 use std::sync::Arc;
 
 use mnestic_engine::Engine;
-use mnestic_server::{app, build_providers, connect_pool, init_tracing, shutdown_signal, AppState};
+use mnestic_server::{
+    app, build_providers, connect_pool, init_tracing, shutdown_signal, AppState, RateLimiter,
+};
 use mnestic_store::{run_migrations, Store};
 
 #[tokio::main]
@@ -37,10 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (embedder, extractor) = build_providers(openai_key, &anthropic_key);
     let engine = Arc::new(Engine::new(Store::new(pool), embedder, extractor));
+    let limiter = RateLimiter::from_env();
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "mnestic-server listening");
-    axum::serve(listener, app(AppState { engine }))
+    axum::serve(listener, app(AppState { engine, limiter }))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     tracing::info!("mnestic-server stopped");

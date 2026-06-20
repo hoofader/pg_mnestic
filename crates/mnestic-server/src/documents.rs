@@ -10,7 +10,7 @@ use axum::Json;
 use mnestic_engine::ChunkHit;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::authenticate;
+use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
 use crate::{clamp_limit, resolve_container_tag, AppState};
@@ -46,7 +46,7 @@ pub async fn ingest_document(
     headers: HeaderMap,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, ApiError> {
-    let tenant = authenticate(state.engine.store().pool(), &headers).await?;
+    let tenant = authenticate_request(&state, &headers).await?;
     if req.content.trim().is_empty() {
         return Err(ApiError::BadRequest("content is empty".into()));
     }
@@ -117,7 +117,7 @@ pub async fn search_documents(
     headers: HeaderMap,
     Json(req): Json<DocSearchRequest>,
 ) -> Result<Json<DocSearchResponse>, ApiError> {
-    let tenant = authenticate(state.engine.store().pool(), &headers).await?;
+    let tenant = authenticate_request(&state, &headers).await?;
     if req.q.trim().is_empty() {
         return Err(ApiError::BadRequest("q is empty".into()));
     }

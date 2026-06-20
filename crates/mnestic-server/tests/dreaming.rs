@@ -87,7 +87,7 @@ async fn dreaming_dynamic_defers_extraction() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine: engine.clone() };
+    let state = AppState { engine: engine.clone(), limiter: mnestic_server::RateLimiter::disabled() };
 
     // dreaming: dynamic returns queued and does not extract inline.
     let resp = app(state.clone())

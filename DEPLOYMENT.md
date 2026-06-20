@@ -101,6 +101,20 @@ periodic base backups.
 - After restoring a backup, re-apply any erasures (`purge-actor`) that were honored after the
   backup was taken, or the restore silently reintroduces deleted data.
 
+## Rate limiting
+
+Each API key gets a token bucket: `MNESTIC_RATE_LIMIT_PER_MIN` requests per minute (default
+600), bursting up to that many, refilling steadily. A key over its budget gets `429`. The
+limit is per key, so one tenant's traffic can't starve another's, and the check runs after the
+key is authenticated, so unauthenticated requests never consume a bucket. Set
+`MNESTIC_RATE_LIMIT_PER_MIN=0` to disable it.
+
+The state is in-process. With more than one replica each counts independently, so the
+effective limit is about (replicas x the configured rate); divide the per-key budget by the
+replica count, or front the deployment with a proxy/gateway that enforces a shared limit, if
+you need an exact cluster-wide cap. The bucket map holds one entry per active key; it is not
+evicted, which is bounded by the number of issued keys.
+
 ## Async ingestion (the worker)
 
 By default `POST /v4/memories` extracts and embeds synchronously, so the call blocks on model

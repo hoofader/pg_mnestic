@@ -94,7 +94,7 @@ async fn session_and_projects() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine: engine.clone() };
+    let state = AppState { engine: engine.clone(), limiter: mnestic_server::RateLimiter::disabled() };
 
     // Seed a memory carrying a container tag so projects has something to list.
     engine

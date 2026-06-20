@@ -17,7 +17,7 @@ use mnestic_engine::Profile;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::auth::authenticate;
+use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
 use crate::{clamp_limit, resolve_container_tag, AppState};
@@ -26,7 +26,7 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 
 pub async fn mcp(State(state): State<AppState>, headers: HeaderMap, Json(msg): Json<Value>) -> Response {
-    let tenant = match authenticate(state.engine.store().pool(), &headers).await {
+    let tenant = match authenticate_request(&state, &headers).await {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };

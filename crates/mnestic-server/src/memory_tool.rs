@@ -9,7 +9,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::authenticate;
+use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
 use crate::{resolve_container_tag, AppState};
@@ -50,7 +50,7 @@ pub async fn memory_tool(
     headers: HeaderMap,
     Json(req): Json<MemoryToolRequest>,
 ) -> Result<Json<MemoryToolResponse>, ApiError> {
-    let tenant = authenticate(state.engine.store().pool(), &headers).await?;
+    let tenant = authenticate_request(&state, &headers).await?;
     if req.content.trim().is_empty() {
         return Err(ApiError::BadRequest("content is empty".into()));
     }

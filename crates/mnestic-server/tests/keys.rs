@@ -64,7 +64,7 @@ async fn issued_key_authenticates_to_its_tenant() {
     let first = issue_key(&pool, "acme", Some("ci")).await.expect("issue first key");
     assert!(first.token.starts_with("sm_"), "sm_ prefix required, got {}", first.token);
     assert_eq!(first.token.len(), 3 + 48, "sm_ plus 24 bytes of hex");
-    let resolved = authenticate(&pool, &bearer(&first.token)).await.expect("authenticate");
+    let (resolved, _digest) = authenticate(&pool, &bearer(&first.token)).await.expect("authenticate");
     assert_eq!(resolved, first.tenant_id, "token resolves to its tenant");
 
     // The cleartext is not stored; only the digest is.
@@ -81,12 +81,12 @@ async fn issued_key_authenticates_to_its_tenant() {
     let second = issue_key(&pool, "acme", None).await.expect("issue second key");
     assert_eq!(second.tenant_id, first.tenant_id, "same tenant on re-issue");
     assert_ne!(second.token, first.token, "a new token each time");
-    let resolved2 = authenticate(&pool, &bearer(&second.token)).await.expect("authenticate second");
+    let (resolved2, _) = authenticate(&pool, &bearer(&second.token)).await.expect("authenticate second");
     assert_eq!(resolved2, first.tenant_id);
     // The prior key is untouched: issuing a new one does not revoke it (revocation is a
     // separate, explicit operation).
     assert_eq!(
-        authenticate(&pool, &bearer(&first.token)).await.expect("first still valid"),
+        authenticate(&pool, &bearer(&first.token)).await.expect("first still valid").0,
         first.tenant_id,
     );
 
@@ -119,7 +119,7 @@ async fn issued_key_authenticates_to_its_tenant() {
         "revoked key no longer authenticates"
     );
     assert_eq!(
-        authenticate(&pool, &bearer(&second.token)).await.expect("second still valid"),
+        authenticate(&pool, &bearer(&second.token)).await.expect("second still valid").0,
         first.tenant_id,
         "revoking one key does not affect another"
     );

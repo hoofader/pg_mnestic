@@ -11,6 +11,7 @@ use axum::Json;
 pub enum ApiError {
     Unauthorized,
     BadRequest(String),
+    TooManyRequests,
     Internal(String),
 }
 
@@ -31,6 +32,9 @@ impl IntoResponse for ApiError {
         let (status, msg) = match self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::TooManyRequests => {
+                (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string())
+            }
             ApiError::Internal(detail) => {
                 // Keep the cause out of the response; a public 500 must not reveal it. The
                 // detail goes to the logs so an operator can still diagnose it.

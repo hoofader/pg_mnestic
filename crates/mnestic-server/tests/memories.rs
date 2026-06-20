@@ -89,7 +89,7 @@ async fn add_memory_endpoint() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine: engine.clone() };
+    let state = AppState { engine: engine.clone(), limiter: mnestic_server::RateLimiter::disabled() };
 
     // No token and a wrong token are both rejected.
     let resp = app(state.clone())

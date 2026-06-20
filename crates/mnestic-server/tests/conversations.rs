@@ -87,7 +87,7 @@ async fn ingest_conversation_endpoint() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine: engine.clone() };
+    let state = AppState { engine: engine.clone(), limiter: mnestic_server::RateLimiter::disabled() };
 
     let conv = r#"{"conversationId":"c-1","containerTag":"user:3",
                    "messages":[{"role":"user","content":"I am training for a marathon"},

@@ -112,7 +112,7 @@ async fn memory_tool_save_then_forget_by_content() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(EmployerExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine: engine.clone() };
+    let state = AppState { engine: engine.clone(), limiter: mnestic_server::RateLimiter::disabled() };
 
     // Save an employer fact under actor user:7.
     let resp = app(state.clone())

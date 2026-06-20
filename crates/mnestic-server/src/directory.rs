@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde::Serialize;
 
-use crate::auth::authenticate;
+use crate::auth::authenticate_request;
 use crate::error::ApiError;
 use crate::AppState;
 
@@ -25,7 +25,7 @@ pub async fn session(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<SessionResponse>, ApiError> {
-    let tenant = authenticate(state.engine.store().pool(), &headers).await?;
+    let tenant = authenticate_request(&state, &headers).await?;
     let user_id = state.engine.store().tenant_external_id(tenant).await?.unwrap_or_default();
     Ok(Json(SessionResponse { user_id, email: None, name: None }))
 }
@@ -34,7 +34,7 @@ pub async fn projects(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<String>>, ApiError> {
-    let tenant = authenticate(state.engine.store().pool(), &headers).await?;
+    let tenant = authenticate_request(&state, &headers).await?;
     let tags = state.engine.store().list_container_tags(tenant).await?;
     Ok(Json(tags))
 }

@@ -24,14 +24,18 @@ mod mcp;
 mod memories;
 mod memory_tool;
 mod query;
+pub mod rate_limit;
 
 pub use container_tag::{parse_container_tag, reconstruct_container_tag, Scope};
+pub use rate_limit::RateLimiter;
 
 /// Shared handler state. The engine carries its own store/pool, which the auth lookup
-/// reuses (the api_key table is outside RLS, so no tenant context is needed for it).
+/// reuses (the api_key table is outside RLS, so no tenant context is needed for it). The
+/// limiter is per-key and per-process.
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<Engine>,
+    pub limiter: Arc<RateLimiter>,
 }
 
 /// Build the router. Caller supplies an engine (real providers in the binary, mocks in

@@ -6,23 +6,38 @@
 
 use axum::http::{header, HeaderMap};
 use sqlx::PgPool;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::error::ApiError;
+use crate::AppState;
 
 /// Resolve the bearer token to its tenant by comparing the token's SHA-256 (computed in
 /// the database via pgcrypto, so the cleartext token never lands in a query log as a
-/// value to match) against the stored hash. Unknown or missing token is a 401.
-pub async fn authenticate(pool: &PgPool, headers: &HeaderMap) -> Result<Uuid, ApiError> {
+/// value to match) against the stored hash. Returns the tenant and the stored digest (the
+/// per-key identity the rate limiter buckets on). Unknown or missing token is a 401.
+pub async fn authenticate(pool: &PgPool, headers: &HeaderMap) -> Result<(Uuid, Vec<u8>), ApiError> {
     let token = bearer_token(headers).ok_or(ApiError::Unauthorized)?;
-    let tenant: Option<Uuid> = sqlx::query_scalar(
-        "SELECT tenant_id FROM mnestic_api_key \
+    let row = sqlx::query(
+        "SELECT tenant_id, token_sha256 FROM mnestic_api_key \
          WHERE token_sha256 = digest($1, 'sha256') AND revoked_at IS NULL",
     )
     .bind(token)
     .fetch_optional(pool)
-    .await?;
-    tenant.ok_or(ApiError::Unauthorized)
+    .await?
+    .ok_or(ApiError::Unauthorized)?;
+    Ok((row.get("tenant_id"), row.get("token_sha256")))
+}
+
+/// Authenticate, then enforce the per-key rate limit. The check is keyed on the resolved
+/// key's digest, so only valid keys consume a bucket; an over-limit key is a 429. Handlers
+/// call this; `authenticate` stays the bare tenant resolver.
+pub async fn authenticate_request(state: &AppState, headers: &HeaderMap) -> Result<Uuid, ApiError> {
+    let (tenant, key) = authenticate(state.engine.store().pool(), headers).await?;
+    if !state.limiter.allow(&key) {
+        return Err(ApiError::TooManyRequests);
+    }
+    Ok(tenant)
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {

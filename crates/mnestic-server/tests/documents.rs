@@ -87,7 +87,7 @@ async fn ingest_and_search_documents_endpoints() {
     let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
     let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
-    let state = AppState { engine };
+    let state = AppState { engine, limiter: mnestic_server::RateLimiter::disabled() };
 
     // Ingest a document with a unique phrase under containerTag user:42.
     let resp = app(state.clone())
