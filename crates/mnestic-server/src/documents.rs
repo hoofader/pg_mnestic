@@ -74,23 +74,32 @@ pub async fn ingest_document(
     Ok(Json(IngestResponse { id, status: status.to_string(), chunks: result.chunk_ids.len() }))
 }
 
+// The supermemory SDK groups matches per document (sdk-ts SearchDocumentsResponse.Result):
+// each document carries its matching `chunks`, the best `score`, and document fields.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DocumentHit {
-    pub id: String,
-    pub document_id: String,
-    /// The chunk text (doc 04 field map: the document path returns `chunk`, not `memory`).
-    pub chunk: String,
-    pub similarity: f64,
+pub struct DocChunk {
+    pub content: String,
+    /// All returned chunks are matches, so each is relevant; kept for SDK shape parity.
+    pub is_relevant: bool,
+    pub score: f64,
 }
 
-fn to_hit(h: ChunkHit) -> DocumentHit {
-    DocumentHit {
-        id: h.id.to_string(),
-        document_id: h.document_id.to_string(),
-        chunk: h.content,
-        similarity: h.score,
-    }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentResult {
+    pub document_id: String,
+    pub chunks: Vec<DocChunk>,
+    /// The document's best chunk score.
+    pub score: f64,
+    pub title: Option<String>,
+    /// Documents carry no distinct type here; the field is present and nullable per the SDK.
+    #[serde(rename = "type")]
+    pub doc_type: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: Option<String>,
+    /// Documents are immutable reference text, so updatedAt mirrors createdAt.
+    pub updated_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,7 +118,36 @@ pub struct DocSearchRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DocSearchResponse {
     pub container_tag: String,
-    pub results: Vec<DocumentHit>,
+    pub results: Vec<DocumentResult>,
+    pub timing: u64,
+    pub total: usize,
+}
+
+/// Group score-ordered chunk hits into documents, preserving the order in which each
+/// document first appears (so the best-scoring document leads).
+fn group_by_document(hits: Vec<ChunkHit>) -> Vec<DocumentResult> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_doc: std::collections::HashMap<String, DocumentResult> = std::collections::HashMap::new();
+    for h in hits {
+        let doc_id = h.document_id.to_string();
+        let created = h.document_created_at.map(|t| t.to_rfc3339());
+        let entry = by_doc.entry(doc_id.clone()).or_insert_with(|| {
+            order.push(doc_id.clone());
+            DocumentResult {
+                document_id: doc_id.clone(),
+                chunks: Vec::new(),
+                score: h.score,
+                title: h.document_title.clone(),
+                doc_type: None,
+                metadata: h.document_metadata.clone(),
+                created_at: created.clone(),
+                updated_at: created.clone(),
+            }
+        });
+        entry.score = entry.score.max(h.score);
+        entry.chunks.push(DocChunk { content: h.content, is_relevant: true, score: h.score });
+    }
+    order.into_iter().filter_map(|id| by_doc.remove(&id)).collect()
 }
 
 pub async fn search_documents(
@@ -123,12 +161,19 @@ pub async fn search_documents(
     }
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
+    // `limit` bounds documents, but several top chunks can collapse into one document, so
+    // over-fetch chunks and truncate to `limit` documents after grouping. Bounded so a large
+    // limit can't fan the chunk scan out without a ceiling.
+    let doc_limit = clamp_limit(req.limit) as usize;
+    let chunk_budget = (doc_limit as i64).saturating_mul(8).clamp(50, 200);
+    let started = std::time::Instant::now();
     let hits = state
         .engine
-        .search_documents(tenant, &actor_id, &container_tags, &req.q, clamp_limit(req.limit))
+        .search_documents(tenant, &actor_id, &container_tags, &req.q, chunk_budget)
         .await?;
-    Ok(Json(DocSearchResponse {
-        container_tag: tag,
-        results: hits.into_iter().map(to_hit).collect(),
-    }))
+    let timing = started.elapsed().as_millis() as u64;
+    let mut results = group_by_document(hits);
+    results.truncate(doc_limit);
+    let total = results.len();
+    Ok(Json(DocSearchResponse { container_tag: tag, results, timing, total }))
 }

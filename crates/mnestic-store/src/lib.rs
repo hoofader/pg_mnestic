@@ -107,7 +107,8 @@ pub struct NewChunk<'a> {
     pub embedding: &'a [f32],
 }
 
-/// One ranked document chunk returned by `search_chunks`.
+/// One ranked document chunk returned by `search_chunks`, carrying its parent
+/// document's fields so the caller can group chunks back into documents.
 #[derive(Debug, Clone)]
 pub struct ChunkHit {
     pub id: Uuid,
@@ -115,6 +116,9 @@ pub struct ChunkHit {
     pub ord: i32,
     pub content: String,
     pub score: f64,
+    pub document_title: Option<String>,
+    pub document_metadata: serde_json::Value,
+    pub document_created_at: Option<DateTime<Utc>>,
 }
 
 /// A fully specified memory row for the engine's write path. Unlike `NewMemory`,
@@ -765,6 +769,11 @@ impl Store {
                 ord: r.get("ord"),
                 content: r.get("content"),
                 score: r.get("score"),
+                document_title: r.get("document_title"),
+                document_metadata: r
+                    .get::<Option<serde_json::Value>, _>("document_metadata")
+                    .unwrap_or_else(|| serde_json::json!({})),
+                document_created_at: r.get("document_created_at"),
             })
             .collect())
     }
@@ -1066,8 +1075,10 @@ fused AS ( \
   FROM (SELECT id, rnk FROM vec UNION ALL SELECT id, rnk FROM lex) u \
   GROUP BY id \
 ) \
-SELECT c.id, c.document_id, c.ord, c.content, f.rrf::float8 AS score \
+SELECT c.id, c.document_id, c.ord, c.content, f.rrf::float8 AS score, \
+       d.title AS document_title, d.metadata AS document_metadata, d.created_at AS document_created_at \
 FROM fused f JOIN mnestic_chunk c ON c.id = f.id \
+JOIN mnestic_document d ON d.id = c.document_id \
 ORDER BY score DESC, c.id \
 LIMIT $5";
 

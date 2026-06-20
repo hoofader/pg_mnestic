@@ -112,12 +112,23 @@ async fn ingest_and_search_documents_endpoints() {
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
     assert_eq!(j["containerTag"], "user:42");
+    // sdk-ts SearchDocumentsResponse: results grouped per document, each with chunks[].
+    assert!(j["timing"].is_number() && j["total"].is_number(), "v3 search carries timing/total");
     let hits = j["results"].as_array().unwrap();
     assert!(
-        hits.iter().any(|h| h["chunk"].as_str().is_some_and(|m| m.contains("mitochondria"))),
+        hits.iter().any(|h| h["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["content"].as_str().is_some_and(|m| m.contains("mitochondria")))),
         "document search returns the matching chunk, got {hits:?}"
     );
-    assert!(hits.iter().all(|h| h["documentId"].is_string() && h["similarity"].is_number()));
+    assert!(hits.iter().all(|h| {
+        h["documentId"].is_string()
+            && h["score"].is_number()
+            && h["metadata"].is_object()
+            && h["chunks"].as_array().unwrap().iter().all(|c| c["isRelevant"].is_boolean())
+    }));
 
     // Idempotent re-ingest is skipped.
     let resp = app(state.clone())
