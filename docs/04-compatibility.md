@@ -1,13 +1,13 @@
 # Mnestic: supermemory Compatibility
 
-> **Document 4 of 4** · Status: Draft v0.2 · Date: 2026-06-07
+> **Document 4 of 4** · Status: v0.3, core memory surface implemented · Date: 2026-06-20
 > Companion documents: `01-high-level-plan.md`, `02-architecture.md`, `03-low-level-design.md`
 
-This document is the contract for running the existing supermemory open-source shells against Mnestic. It is a **Phase 2 deliverable**, but it is written now so the core schema (LLD §2) and SDK (LLD §7) are designed to map onto it without a later migration.
+This document is the contract for running the existing supermemory open-source shells against Mnestic. It started as a Phase 2 deliverable; the core memory surface is now built and verified against the official SDK. See §4a for the per-endpoint status.
 
 The goal is narrow and concrete: a user installs `claude-supermemory` (or points an MCP client) at Mnestic by changing a base URL and an API key, and it works. We do not fork the shells.
 
-Everything below is grounded in supermemory's published OpenAPI (`api.supermemory.ai/v3/openapi`), the SDK packages (`supermemory` on npm and PyPI), and the `supermemoryai/*` repos. Items marked *(unverified)* were listed in their reference index but not confirmed field-by-field; close them by pulling the full OpenAPI before implementing.
+The authoritative contract is the official TypeScript SDK `github.com/supermemoryai/sdk-ts` (Stainless-generated from supermemory's OpenAPI), cross-checked against `supermemoryai/python-sdk` and the Rust DTOs in `supermemoryai/smfs`. The published docs prose (`supermemory.ai/docs`) is summarized and was imprecise on response shapes, so the SDK types are the source of truth. §4a records the verified shapes and what was built.
 
 ---
 
@@ -101,24 +101,65 @@ The `filters` grammar (nested AND/OR up to 5 levels; leaf `{ key, value, filterT
 
 Base path mirrors theirs: `/v3` (documents) and `/v4` (memories). Auth: `Authorization: Bearer sm_...`. Accept both `containerTag` and `containerTags`.
 
+The shapes below are the verified `sdk-ts` ones. Responses keep an additive `containerTag` echo (the SDK ignores unknown keys), which the table omits.
+
 ```
-POST /v3/documents      { content, containerTag?, containerTags?, customId?, metadata?,
-                          entityContext?, taskType?, dreaming? }  -> { id, status }
-POST /v3/search         { q, containerTag?/containerTags?, filters?, limit?, ... }  -> document hits
-POST /v4/search         { q, containerTag?, searchMode?, limit?, threshold?, rerank?, filters? }
-                        -> { results: [{ id, memory, chunk?, similarity, metadata, updatedAt, version }],
-                             timing, total }
-POST /v4/profile        { containerTag?, q?, threshold?, filters? }  -> profile (+ optional results)
-POST /v4/memories       { memories: [{ content, isStatic?, metadata?, forgetAfter?, forgetReason?,
-                          temporalContext? }], containerTag }  -> { documentId, memories: [...] }
-POST /v4/conversations  { conversationId, messages: [...], containerTags?, metadata? }
-GET  /v3/session        -> { userId, email, name }            # key validation for MCP/plugins
-GET  /v3/projects       -> [ container tags ]                 # (unverified path)
+POST   /v3/documents     { content, containerTag?, containerTags?, customId?, metadata?,
+                           title?, uri? }  -> { id, status, chunks }
+POST   /v3/search        { q, containerTag?/containerTags?, limit?, filters? }
+                         -> { results: [{ documentId, chunks: [{ content, isRelevant, score }],
+                              score, title, type, metadata, createdAt, updatedAt }], timing, total }
+POST   /v4/search        { q, containerTag?, limit?, filters? }
+                         -> { results: [{ id, memory, similarity, updatedAt, metadata }], timing, total }
+POST   /v4/profile       { containerTag?, q?, limit?, filters? }
+                         -> { profile: { static: [...], dynamic: [...] },
+                              searchResults?: { results: [...], timing, total } }
+POST   /v4/memories      { content, containerTag?/containerTags?, customId?, metadata?, dreaming? }
+                         -> { id, containerTag, status }
+DELETE /v4/memories      { containerTag, id?, content?, reason? }  -> { id, forgotten }
+PATCH  /v4/memories      { containerTag, newContent, id?, metadata?, forgetAfter?, forgetReason?,
+                           temporalContext? }
+                         -> { id, createdAt, memory, version, parentMemoryId, rootMemoryId,
+                              forgetAfter, forgetReason }
+POST   /v4/conversations { conversationId, messages: [...], containerTag?/containerTags?, metadata? }
+                         -> { conversationId, id, status }
+GET    /v3/session       -> { userId, email, name }     # key validation for MCP/plugins
+GET    /v3/projects      -> [ container tags ]           # convenience; not in the SDK
 ```
 
-Endpoints we deliberately skip in Phase 2 (not called by the target shells): connectors (`/v3/connections/*`), file upload, batch/bulk document ops, container-tag merge, the Memory Router proxy. They can follow if a shell needs them.
+Note: the SDK's `client.add` adds content via `POST /v3/documents` (not `/v4/memories`), and its `/v4/memories` surface is forget (`DELETE`) and update (`PATCH`) only. Mnestic also serves `POST /v4/memories` as a direct single-memory add (supermemory's "Create Memories Directly"). `/v4/conversations`, `/v3/session`, and `/v3/projects` are not in `sdk-ts`; they are additive conveniences the shells use.
 
 > The Memory Router (the transparent LLM proxy that scopes by the `x-sm-user-id` header, base-URL form `.../v3/https://api.openai.com/v1`) is a **separate product** from the memory CRUD API. It is out of scope. If we ever add it, `x-sm-user-id` maps to `actor_id` the same way `containerTag` does.
+
+---
+
+## 4a. Implementation status (verified against `sdk-ts`)
+
+Every SDK method that targets the memory core is served and asserted by an integration test that checks the response deserializes into the SDK's shape.
+
+| SDK method | Endpoint | Status |
+|---|---|---|
+| `client.add` | `POST /v3/documents` | Done. Stores `metadata`; returns `{ id, status, chunks }`. |
+| `client.search.documents` / `.execute` | `POST /v3/search` | Done. Per-document grouping with `chunks[]`; `limit` bounds documents. |
+| `client.search.memories` | `POST /v4/search` | Done. `results`/`timing`/`total`, per-result `metadata`. |
+| `client.profile` | `POST /v4/profile` | Done. `profile.static`/`dynamic` + optional `searchResults`. |
+| `client.memories.forget` | `DELETE /v4/memories` | Done. By `id` (actor-scoped) or `content`. |
+| `client.memories.updateMemory` | `PATCH /v4/memories` | Done. Versioned supersede; carries the memory class forward. |
+| `filters` (on the three read endpoints) | n/a | Done. Rust-side OR/AND tree over `metadata`; no dynamic SQL. |
+
+Out of scope, by design (the SaaS platform surface, not the self-hosted memory engine):
+
+- Connectors / OAuth (`/v3/connections/*`), and the per-provider sync/import/resources.
+- File upload and storage (`/v3/documents/file`, `/file-url`), and document CRUD/list/batch/bulk/chunks/processing (`GET`/`PATCH`/`DELETE /v3/documents/*`, `/v3/documents/list`, etc.).
+- Organization settings (`/v3/settings`), container-tag settings/merge/delete (`/v3/container-tags/*`), and scoped API keys (`/v3/auth/scoped-key`). Mnestic issues tenant-scoped keys through its own CLI.
+- The Memory Router LLM proxy (a separate product, see §4).
+
+Known limitations:
+
+- `metadata` on the async ingest path (`dreaming: dynamic`) is dropped; the synchronous path stores it. Carrying it through the worker needs a `metadata` column on `mnestic_source`.
+- `filters` is evaluated over an over-fetched candidate pool (best-effort at extreme scale), not pushed into the SQL. `negate`/`ignoreCase` accept JSON booleans, not the SDK's `"true"`/`"false"` string forms.
+- `searchMode`, `threshold`, `rerank`, `aggregate`, and `include.forgottenMemories` on `/v4/search` are accepted (ignored) rather than honored; recall is always hybrid over latest active memories.
+- `entityContext` and `taskType` on `/v3/documents` are accepted and ignored (documents are not run through memory extraction).
 
 ---
 
@@ -139,12 +180,19 @@ No code change in the shells. The `sm_` key prefix is required because their aut
 
 ---
 
-## 6. Open items to close before building the compat layer
+## 6. Resolved, and what remains
 
-- Pull the full OpenAPI JSON and the SDK `api.md` files to confirm the *(unverified)* paths: `/v3/projects`, document update/delete verbs, the exact `/v4/search` response field set, and the `client.memories.*` method names.
-- Decide the colon-hierarchy parse convention for `containerTag` (§2) and make it a documented setting.
-- Decide whether `taskType: superrag` is supported at all in Phase 2 or returns a clear "not supported" so shells degrade predictably.
-- Pin the supermemory API generation we target (the `/v3`+`/v4` split as of 2026-06) and record it, since their surface evolves.
+Resolved (verified against `sdk-ts`, 2026-06-20):
+
+- The SDK surface was confirmed field-by-field. `client.memories.*` is `forget` (`DELETE /v4/memories`) and `updateMemory` (`PATCH /v4/memories`); both are served. The `/v4/search` and `/v4/profile` response shapes are the verified ones in §4. `/v3/session` and `/v3/projects` are not in the SDK; kept as conveniences.
+- The colon-hierarchy parse default is shipped (`parse_container_tag`): the trailing `user:<id>` (or final segment) is the actor, the rest are container tags.
+
+What remains (tracked in §4a "Known limitations"):
+
+- Async-path `metadata` (needs a `metadata` column on `mnestic_source` and worker threading).
+- Honoring `searchMode`/`threshold`/`rerank` rather than accepting-and-ignoring them.
+- `taskType: superrag` routing (today documents take the chunk path and memories the extraction path; `superrag` is not branched).
+- Pushing `filters` into SQL for exact results past the over-fetch pool, and accepting the `"true"`/`"false"` string forms of `negate`/`ignoreCase`.
 
 ---
 
