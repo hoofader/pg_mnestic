@@ -46,6 +46,16 @@ fn post(token: Option<&str>, body: &str) -> Request<Body> {
     b.body(Body::from(body.to_string())).unwrap()
 }
 
+fn delete_req(token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri("/v4/memories")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -121,6 +131,36 @@ async fn add_memory_endpoint() {
         hits.iter().any(|h| h.content.as_deref() == Some("the user loves climbing")),
         "memory stored under the parsed actor"
     );
+
+    // DELETE /v4/memories forgets one memory by id (the SDK's client.memories.forget).
+    let hit_id = hits
+        .iter()
+        .find(|h| h.content.as_deref() == Some("the user loves climbing"))
+        .unwrap()
+        .id
+        .to_string();
+    let resp = app(state.clone())
+        .oneshot(delete_req(
+            "sk-test",
+            &format!(r#"{{"containerTag":"org:7:user:99","id":"{hit_id}","reason":"test"}}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["id"], hit_id, "echoes the forgotten id");
+    assert!(j["forgotten"].as_bool().unwrap(), "expected forgotten:true");
+    let after = engine.recall(tenant, "user:99", "climbing", 10).await.unwrap();
+    assert!(
+        !after.iter().any(|h| h.content.as_deref() == Some("the user loves climbing")),
+        "forgotten memory should not appear in recall"
+    );
+    // Forget with neither id nor content is a 400.
+    let resp = app(state.clone())
+        .oneshot(delete_req("sk-test", r#"{"containerTag":"org:7:user:99"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "forget needs id or content");
 
     // Same customId is an idempotent skip.
     let resp = app(state.clone())

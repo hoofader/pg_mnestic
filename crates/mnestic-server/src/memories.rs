@@ -92,6 +92,56 @@ pub async fn add_memory(
     }))
 }
 
+// The SDK's `client.memories.forget` -> DELETE /v4/memories. `id` targets one memory; `content`
+// forgets by extracted key when no id is known. `reason` is recorded on the tombstone.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetRequest {
+    #[serde(default)]
+    pub container_tag: Option<String>,
+    #[serde(default)]
+    pub container_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetResponse {
+    /// The forgotten memory id (the first removed, for a content-based forget).
+    pub id: String,
+    pub forgotten: bool,
+}
+
+pub async fn forget_memory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<ForgetRequest>,
+) -> Result<Json<ForgetResponse>, ApiError> {
+    let tenant = authenticate_request(&state, &headers).await?;
+    let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
+    let Scope { actor_id, container_tags: _ } = parse_container_tag(&tag);
+
+    if let Some(id_str) = req.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let id = uuid::Uuid::parse_str(id_str)
+            .map_err(|_| ApiError::BadRequest("id is not a valid memory id".into()))?;
+        let forgotten = state.engine.forget_by_id(tenant, &actor_id, id, req.reason.as_deref()).await?;
+        return Ok(Json(ForgetResponse { id: id_str.to_string(), forgotten }));
+    }
+
+    if let Some(content) = req.content.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let ids = state.engine.forget_by_content(tenant, &actor_id, content).await?;
+        let id = ids.first().map(|u| u.to_string()).unwrap_or_default();
+        return Ok(Json(ForgetResponse { id, forgotten: !ids.is_empty() }));
+    }
+
+    Err(ApiError::BadRequest("forget requires id or content".into()))
+}
+
 #[derive(Deserialize)]
 pub struct Message {
     pub role: String,

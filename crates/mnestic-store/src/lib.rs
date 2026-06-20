@@ -600,18 +600,22 @@ impl Store {
     pub async fn forget_memory_by_id_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant_id: Uuid,
+        actor_id: &str,
         id: Uuid,
         reason: Option<&str>,
     ) -> Result<u64> {
+        // Actor-scoped, like every other read/write path: one actor cannot forget another's
+        // memory by guessing its id, and the caller's profile refresh then matches the row.
         let done = sqlx::query(
             "UPDATE mnestic_memory SET status = 'forgotten', is_latest = false, \
-                    forget_reason = $3, \
+                    forget_reason = $4, \
                     recorded_time = CASE WHEN now() > lower(recorded_time) \
                                          THEN tstzrange(lower(recorded_time), now()) \
                                          ELSE recorded_time END \
-             WHERE tenant_id = $1 AND id = $2 AND status = 'active'",
+             WHERE tenant_id = $1 AND actor_id = $2 AND id = $3 AND status = 'active'",
         )
         .bind(tenant_id)
+        .bind(actor_id)
         .bind(id)
         .bind(reason)
         .execute(&mut **tx)

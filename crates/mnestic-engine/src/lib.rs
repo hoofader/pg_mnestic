@@ -759,6 +759,34 @@ impl Engine {
         Ok(ids)
     }
 
+    /// Forget a single memory by its id (the SDK's `DELETE /v4/memories` with an `id`),
+    /// scoped to the actor. Returns true when an active row was tombstoned. The profile
+    /// refresh shares the transaction, so a concurrent recall can't see the memory gone
+    /// from search yet still present in the cached profile.
+    pub async fn forget_by_id(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        id: Uuid,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        let mut tx = self.store.begin_tenant(tenant_id).await?;
+        let n = Store::forget_memory_by_id_tx(&mut tx, tenant_id, actor_id, id, reason).await?;
+        if n > 0 {
+            Store::refresh_profile_tx(
+                &mut tx,
+                tenant_id,
+                actor_id,
+                STATIC_CONFIDENCE,
+                STATIC_FACTS_CAP,
+                DYNAMIC_CTX_CAP,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(n > 0)
+    }
+
     /// Forget by content (the supermemory `memory` tool's content-based forget). Extract
     /// the facts the text describes and tombstone the actor's latest active memory for
     /// each resolved (subject, attribute) key. When the content names a value, only the
@@ -802,7 +830,7 @@ impl Engine {
                     continue;
                 }
                 let id = parse_id(&m.id)?;
-                if Store::forget_memory_by_id_tx(&mut tx, tenant_id, id, Some("forgotten by content")).await? == 1 {
+                if Store::forget_memory_by_id_tx(&mut tx, tenant_id, actor_id, id, Some("forgotten by content")).await? == 1 {
                     forgotten.push(id);
                 }
             }
