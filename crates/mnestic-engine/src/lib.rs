@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 mod error;
 pub use error::{Error, Result};
-pub use mnestic_store::{ChunkHit, MemoryVersion, Profile, RecallHit};
+pub use mnestic_store::{
+    ChunkHit, MemoryVersion, MetaFilter, MetaKind, MetaLeaf, MetaOp, Profile, RecallHit,
+};
 
 /// An actor's durable profile plus the memories most relevant to a query. Backs the
 /// supermemory `/v4/profile` shape (profile, optionally with query-scoped results).
@@ -137,7 +139,7 @@ impl Engine {
         query: &str,
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
-        self.recall_scoped(tenant_id, actor_id, &[], query, limit).await
+        self.recall_scoped(tenant_id, actor_id, &[], query, limit, None).await
     }
 
     /// Recall the actor's most relevant memories for a query, restricted to memories
@@ -146,6 +148,9 @@ impl Engine {
     /// Hybrid retrieval then pulls a candidate pool, and when a reranker is set the
     /// pool is reranked against the user's original query before the top `limit` are
     /// returned.
+    ///
+    /// An optional `filter` is pushed into SQL so a selective metadata filter returns exact
+    /// results at scale, without the Rust over-fetch + retain the document path still uses.
     ///
     /// The signature is provisional: it exposes no `search_mode`/`threshold` and
     /// returns the store row type. The document/chunk path is a later increment.
@@ -156,6 +161,7 @@ impl Engine {
         container_tags: &[String],
         query: &str,
         limit: i64,
+        filter: Option<&MetaFilter>,
     ) -> Result<Vec<RecallHit>> {
         let retrieval_query = match &self.rewriter {
             Some(r) => r.rewrite(query).await?,
@@ -184,6 +190,7 @@ impl Engine {
                 container_tags,
                 limit: pool,
                 as_of: None,
+                filter,
             })
             .await?;
 
@@ -581,8 +588,8 @@ impl Engine {
     /// returns just the profile (no recall), matching the optional `q` on the
     /// supermemory profile call. `container_tags` and `limit` bound only `relevant`,
     /// not the per-actor `profile`. The recall runs the full pipeline (rewrite, rerank)
-    /// when configured; it has no `threshold`/`filters` yet, so a Phase 2 `/v4/profile`
-    /// adapter cannot honor those client params.
+    /// when configured. An optional `filter` is pushed into the recall SQL, so the recall
+    /// results are filtered exactly; the profile's static/dynamic arrays are never filtered.
     pub async fn profile_query(
         &self,
         tenant_id: Uuid,
@@ -590,12 +597,13 @@ impl Engine {
         container_tags: &[String],
         query: &str,
         limit: i64,
+        filter: Option<&MetaFilter>,
     ) -> Result<ProfileContext> {
         let profile = self.profile(tenant_id, actor_id).await?;
         let relevant = if query.trim().is_empty() {
             Vec::new()
         } else {
-            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit).await?
+            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit, filter).await?
         };
         Ok(ProfileContext { profile, relevant })
     }

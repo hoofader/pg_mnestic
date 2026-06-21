@@ -6,6 +6,7 @@
 //! the tree drives a Rust predicate over an over-fetched candidate pool, which keeps the
 //! injection surface at zero and the SQL static.
 
+use mnestic_engine::{MetaFilter, MetaKind, MetaLeaf, MetaOp};
 use serde::Deserialize;
 
 /// One node of the filter tree. Untagged so the three SDK shapes deserialize from the same
@@ -73,6 +74,38 @@ pub fn matches(node: &FilterNode, metadata: &serde_json::Value) -> bool {
     matches_at(node, metadata, 0)
 }
 
+/// Convert the wire filter tree into the store's `MetaFilter`, so the memory recall path can push
+/// it into SQL instead of retaining in Rust. The store's `to_sql` is built to mirror `matches()`,
+/// so the two paths agree. `filterType` maps to `MetaKind` (unknown/absent -> Equality, matching
+/// the `matches_leaf` fallback); `numericOperator` maps to `MetaOp` (unknown/absent -> None).
+pub fn to_meta_filter(node: &FilterNode) -> MetaFilter {
+    match node {
+        FilterNode::Or { or } => MetaFilter::Or(or.iter().map(to_meta_filter).collect()),
+        FilterNode::And { and } => MetaFilter::And(and.iter().map(to_meta_filter).collect()),
+        FilterNode::Leaf(leaf) => MetaFilter::Leaf(MetaLeaf {
+            key: leaf.key.clone(),
+            value: leaf.value.clone(),
+            kind: match leaf.filter_type.as_deref() {
+                Some("numeric") => MetaKind::Numeric,
+                Some("array_contains") => MetaKind::ArrayContains,
+                Some("string_contains") => MetaKind::StringContains,
+                // "metadata" and any unknown/absent type are string equality, like matches_leaf.
+                _ => MetaKind::Equality,
+            },
+            op: match leaf.numeric_operator.as_deref() {
+                Some(">") => Some(MetaOp::Gt),
+                Some("<") => Some(MetaOp::Lt),
+                Some(">=") => Some(MetaOp::Ge),
+                Some("<=") => Some(MetaOp::Le),
+                Some("=") => Some(MetaOp::Eq),
+                _ => None,
+            },
+            negate: leaf.negate.unwrap_or(false),
+            ignore_case: leaf.ignore_case.unwrap_or(false),
+        }),
+    }
+}
+
 fn matches_at(node: &FilterNode, metadata: &serde_json::Value, depth: usize) -> bool {
     if depth >= MAX_DEPTH {
         return false;
@@ -115,16 +148,17 @@ fn eval_equality(raw: &serde_json::Value, value: &str, ignore_case: bool) -> boo
     }
 }
 
-/// Numeric comparison: both sides parsed as `f64`. A non-numeric metadata value or filter value,
-/// or an unknown operator, is a non-match (never a panic).
+/// Numeric comparison: both sides parsed as a FINITE `f64`. A non-numeric or non-finite metadata
+/// value or filter value, or an unknown operator, is a non-match (never a panic). Requiring finite
+/// keeps this in step with the SQL path, which rejects inf/nan (numeric has no infinity).
 fn eval_numeric(raw: &serde_json::Value, value: &str, op: Option<&str>) -> bool {
     let lhs = match json_as_f64(raw) {
-        Some(n) => n,
-        None => return false,
+        Some(n) if n.is_finite() => n,
+        _ => return false,
     };
     let rhs = match value.trim().parse::<f64>() {
-        Ok(n) => n,
-        Err(_) => return false,
+        Ok(n) if n.is_finite() => n,
+        _ => return false,
     };
     match op {
         Some(">") => lhs > rhs,

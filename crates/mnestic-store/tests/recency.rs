@@ -122,6 +122,7 @@ async fn recency_decays_on_event_time_with_as_of() {
         container_tags: &[],
         limit: 10,
         as_of,
+        filter: None,
     };
     let hits = store.recall_memories(recall(None)).await.expect("recall now");
     let score_of = |id: Uuid| hits.iter().find(|h| h.id == id).map(|h| h.score);
@@ -160,6 +161,7 @@ async fn recency_decays_on_event_time_with_as_of() {
             container_tags: &[],
             limit: 10,
             as_of: None,
+            filter: None,
         })
         .await
         .expect("recall v");

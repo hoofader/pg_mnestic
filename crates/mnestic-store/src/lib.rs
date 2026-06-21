@@ -71,6 +71,185 @@ pub struct PendingSource {
     pub metadata: serde_json::Value,
 }
 
+/// A metadata-filter tree the store can push into SQL. Plain (non-serde) so the server owns the
+/// wire DSL and converts to this; the store owns `to_sql` so it alone controls bind numbering.
+/// Semantics mirror the server's Rust `matches()` exactly, so the SQL and Rust paths agree.
+pub enum MetaFilter {
+    And(Vec<MetaFilter>),
+    Or(Vec<MetaFilter>),
+    Leaf(MetaLeaf),
+}
+
+/// One leaf predicate over a single metadata key. `kind` picks the comparison; `op` only applies
+/// to `Numeric`. `negate` inverts the leaf (a missing key flips to a match, like the Rust path).
+pub struct MetaLeaf {
+    pub key: String,
+    pub value: String,
+    pub kind: MetaKind,
+    pub op: Option<MetaOp>,
+    pub negate: bool,
+    pub ignore_case: bool,
+}
+
+/// The comparison a leaf performs. `Equality` is the default (the wire `"metadata"` and any
+/// unknown `filterType`).
+pub enum MetaKind {
+    Equality,
+    Numeric,
+    ArrayContains,
+    StringContains,
+}
+
+/// The numeric comparison operator for a `Numeric` leaf. A missing operator yields a non-match.
+pub enum MetaOp {
+    Gt,
+    Lt,
+    Ge,
+    Le,
+    Eq,
+}
+
+impl MetaOp {
+    /// The SQL symbol. Allowlisted: this is the only place an operator becomes SQL text, and it
+    /// comes from this fixed enum, never from caller input, so it is safe to embed unbound.
+    fn sql(&self) -> &'static str {
+        match self {
+            MetaOp::Gt => ">",
+            MetaOp::Lt => "<",
+            MetaOp::Ge => ">=",
+            MetaOp::Le => "<=",
+            MetaOp::Eq => "=",
+        }
+    }
+}
+
+/// Recursion cap matching the server's Rust `MAX_DEPTH`, so a deep tree short-circuits to a
+/// non-match instead of building unbounded SQL.
+const META_FILTER_MAX_DEPTH: usize = 16;
+
+impl MetaFilter {
+    /// Render the filter to a SQL boolean expression over `col` (a metadata column expression such
+    /// as `"metadata"`). `next` is the next free positional bind index; the store passes the first
+    /// index past its fixed binds. Each key and value is pushed to `binds` in emission order and
+    /// referenced as `$N`; no caller text is ever interpolated, only `$N`, allowlisted operators,
+    /// `col`, and SQL keywords. `depth` guards recursion.
+    pub fn to_sql(
+        &self,
+        col: &str,
+        next: &mut usize,
+        binds: &mut Vec<String>,
+        depth: usize,
+    ) -> String {
+        if depth >= META_FILTER_MAX_DEPTH {
+            return "false".to_string();
+        }
+        match self {
+            // An empty combiner imposes no constraint, matching the Rust path's empty AND/OR.
+            MetaFilter::And(children) => combine(children, "AND", col, next, binds, depth),
+            MetaFilter::Or(children) => combine(children, "OR", col, next, binds, depth),
+            MetaFilter::Leaf(leaf) => leaf.to_sql(col, next, binds),
+        }
+    }
+}
+
+fn combine(
+    children: &[MetaFilter],
+    joiner: &str,
+    col: &str,
+    next: &mut usize,
+    binds: &mut Vec<String>,
+    depth: usize,
+) -> String {
+    if children.is_empty() {
+        return "true".to_string();
+    }
+    let parts: Vec<String> = children
+        .iter()
+        .map(|c| c.to_sql(col, next, binds, depth + 1))
+        .collect();
+    format!("({})", parts.join(&format!(" {joiner} ")))
+}
+
+impl MetaLeaf {
+    fn to_sql(&self, col: &str, next: &mut usize, binds: &mut Vec<String>) -> String {
+        let body = self.body_sql(col, next, binds);
+        // The COALESCE in each body makes the expression non-NULL and FALSE on a missing key, so
+        // wrapping in NOT(...) flips a missing key to TRUE, matching the Rust path's negate.
+        if self.negate {
+            format!("NOT ({body})")
+        } else {
+            body
+        }
+    }
+
+    fn body_sql(&self, col: &str, next: &mut usize, binds: &mut Vec<String>) -> String {
+        match self.kind {
+            MetaKind::Equality => {
+                // `->>` reads the key as text.
+                let k = bind(self.key.clone(), next, binds);
+                let v = bind(self.value.clone(), next, binds);
+                if self.ignore_case {
+                    format!("COALESCE(lower({col} ->> {k}) = lower({v}), false)")
+                } else {
+                    format!("COALESCE(({col} ->> {k}) = {v}, false)")
+                }
+            }
+            MetaKind::Numeric => {
+                // Treat the value as numeric only if it parses to a FINITE f64. This rejects a
+                // missing operator, a non-numeric value, and inf/nan (which would throw on
+                // `::numeric`, since numeric has no infinity), emitting the literal `false` and
+                // binding nothing, exactly as the Rust path returns false. The key bind is
+                // deferred into this branch so the false path binds nothing.
+                let finite = self.value.trim().parse::<f64>().map(|n| n.is_finite()).unwrap_or(false);
+                match (self.op.as_ref(), finite) {
+                    (Some(op), true) => {
+                        let k = bind(self.key.clone(), next, binds);
+                        let v = bind(self.value.clone(), next, binds);
+                        // Guard the cast with a numeric-shape regex (sign, integer/fraction,
+                        // optional exponent) so a non-numeric stored value cannot throw mid-query;
+                        // the shape matches what both `::numeric` and Rust's f64 parse accept, so
+                        // the two paths agree on which stored values count as numbers.
+                        format!(
+                            "COALESCE(({col} ->> {k}) ~ '^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?$' \
+                             AND ({col} ->> {k})::numeric {} ({v})::numeric, false)",
+                            op.sql()
+                        )
+                    }
+                    _ => "false".to_string(),
+                }
+            }
+            MetaKind::ArrayContains => {
+                // `->` reads the key as jsonb.
+                let k = bind(self.key.clone(), next, binds);
+                let v = bind(self.value.clone(), next, binds);
+                // jsonb_exists matches string elements; numeric array elements are not coerced to
+                // strings here (a minor divergence from the Rust path, which renders them).
+                format!(
+                    "COALESCE(jsonb_typeof({col} -> {k}) = 'array' \
+                     AND jsonb_exists({col} -> {k}, {v}), false)"
+                )
+            }
+            MetaKind::StringContains => {
+                let k = bind(self.key.clone(), next, binds);
+                let v = bind(self.value.clone(), next, binds);
+                if self.ignore_case {
+                    format!("COALESCE(strpos(lower({col} ->> {k}), lower({v})) > 0, false)")
+                } else {
+                    format!("COALESCE(strpos({col} ->> {k}, {v}) > 0, false)")
+                }
+            }
+        }
+    }
+}
+
+/// Push one bound value and return its `$N` placeholder, advancing `next`.
+fn bind(value: String, next: &mut usize, binds: &mut Vec<String>) -> String {
+    let placeholder = format!("${next}");
+    *next += 1;
+    binds.push(value);
+    placeholder
+}
+
 /// Inputs to hybrid recall, bundled so `recall_memories` stays under the argument-count lint.
 pub struct RecallParams<'a> {
     pub tenant_id: Uuid,
@@ -82,6 +261,9 @@ pub struct RecallParams<'a> {
     /// Reference instant for recency decay. None means now(); a past value answers "as of
     /// then" (a fact whose event time is near `as_of` ranks as recent).
     pub as_of: Option<DateTime<Utc>>,
+    /// Optional metadata filter pushed into SQL so a selective filter returns exact results at
+    /// scale (no Rust over-fetch + retain on the memory recall path).
+    pub filter: Option<&'a MetaFilter>,
 }
 
 /// One ranked memory returned by hybrid recall.
@@ -797,6 +979,7 @@ impl Store {
             container_tags,
             limit,
             as_of,
+            filter,
         } = p;
         let qvec = vec_literal(query_embedding);
         let mut tx = self.begin_tenant(tenant_id).await?;
@@ -809,16 +992,30 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
         }
-        let rows = sqlx::query(RECALL_SQL)
+        // The 7 fixed binds are $1..$7, so a filter predicate's binds start at $8. The same
+        // predicate text (and so the same $8.. placeholders) is spliced into both the vec and lex
+        // CTEs; a placeholder referenced twice binds once, so the values are appended only once.
+        let mut filter_binds: Vec<String> = Vec::new();
+        let sql = match filter {
+            Some(f) => {
+                let mut next = 8usize;
+                let predicate = f.to_sql("metadata", &mut next, &mut filter_binds, 0);
+                RECALL_SQL_TEMPLATE.replace("{filter}", &format!(" AND ({predicate})"))
+            }
+            None => RECALL_SQL_TEMPLATE.replace("{filter}", ""),
+        };
+        let mut q = sqlx::query(&sql)
             .bind(tenant_id)
             .bind(qvec)
             .bind(query_text)
             .bind(actor_id)
             .bind(limit)
             .bind(container_tags)
-            .bind(as_of)
-            .fetch_all(&mut *tx)
-            .await?;
+            .bind(as_of);
+        for v in &filter_binds {
+            q = q.bind(v);
+        }
+        let rows = q.fetch_all(&mut *tx).await?;
         tx.commit().await?;
         Ok(rows
             .into_iter()
@@ -1189,14 +1386,15 @@ ON CONFLICT (tenant_id, actor_id) DO UPDATE \
 // calls. This is the tsvector floor; the pg_search BM25 path swaps the lex subquery. It
 // scopes by tenant and actor, plus an optional container_tags filter ($6, array
 // containment, all-of by design: any-of is a union of all-of at a higher layer). An
-// empty array imposes no filter.
-const RECALL_SQL: &str = "\
+// empty array imposes no filter. An optional metadata filter is spliced at the `{filter}` marker
+// in each CTE's WHERE (the same predicate and binds in both); with no filter the marker is empty.
+const RECALL_SQL_TEMPLATE: &str = "\
 WITH vec AS ( \
   SELECT id, row_number() OVER (ORDER BY dist) AS rnk FROM ( \
     SELECT id, embedding <=> $2::halfvec AS dist FROM mnestic_memory \
     WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
       AND (forget_after IS NULL OR forget_after > now()) AND embedding IS NOT NULL \
-      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
+      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]){filter} \
     ORDER BY embedding <=> $2::halfvec LIMIT greatest(50, $5) \
   ) t \
 ), \
@@ -1207,7 +1405,7 @@ lex AS ( \
     WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
       AND (forget_after IS NULL OR forget_after > now()) \
       AND content_tsv @@ plainto_tsquery('english', $3) \
-      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
+      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]){filter} \
     ORDER BY lr DESC LIMIT greatest(50, $5) \
   ) t \
 ), \
@@ -1338,5 +1536,157 @@ mod tests {
                 "migration {version:04} changed; shipped migrations are append-only (see MIGRATIONS.md)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod meta_filter_tests {
+    use super::*;
+
+    // Build SQL the way recall_memories does: the first free bind index is 8 (after the 7 fixed
+    // recall binds), so callers can read the placeholders the same way the store splices them.
+    fn build(f: &MetaFilter) -> (String, Vec<String>) {
+        let mut next = 8usize;
+        let mut binds = Vec::new();
+        let sql = f.to_sql("metadata", &mut next, &mut binds, 0);
+        (sql, binds)
+    }
+
+    fn leaf(key: &str, value: &str) -> MetaLeaf {
+        MetaLeaf {
+            key: key.to_string(),
+            value: value.to_string(),
+            kind: MetaKind::Equality,
+            op: None,
+            negate: false,
+            ignore_case: false,
+        }
+    }
+
+    #[test]
+    fn equality_binds_key_then_value() {
+        let (sql, binds) = build(&MetaFilter::Leaf(leaf("team", "infra")));
+        assert_eq!(sql, "COALESCE((metadata ->> $8) = $9, false)");
+        // Key is bound before value, so $8 is the key and $9 the value.
+        assert_eq!(binds, vec!["team".to_string(), "infra".to_string()]);
+    }
+
+    #[test]
+    fn negated_equality_wraps_in_not() {
+        let mut l = leaf("team", "infra");
+        l.negate = true;
+        let (sql, binds) = build(&MetaFilter::Leaf(l));
+        assert_eq!(sql, "NOT (COALESCE((metadata ->> $8) = $9, false))");
+        assert_eq!(binds, vec!["team".to_string(), "infra".to_string()]);
+    }
+
+    #[test]
+    fn numeric_non_numeric_value_emits_false_no_binds() {
+        let l = MetaLeaf {
+            kind: MetaKind::Numeric,
+            op: Some(MetaOp::Gt),
+            ..leaf("n", "not a number")
+        };
+        let (sql, binds) = build(&MetaFilter::Leaf(l));
+        assert_eq!(sql, "false");
+        assert!(binds.is_empty(), "a non-numeric value binds nothing");
+    }
+
+    #[test]
+    fn numeric_missing_op_emits_false_no_binds() {
+        let l = MetaLeaf { kind: MetaKind::Numeric, op: None, ..leaf("n", "5") };
+        let (sql, binds) = build(&MetaFilter::Leaf(l));
+        assert_eq!(sql, "false");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn numeric_valid_guards_the_cast() {
+        let l = MetaLeaf { kind: MetaKind::Numeric, op: Some(MetaOp::Gt), ..leaf("n", "5") };
+        let (sql, binds) = build(&MetaFilter::Leaf(l));
+        assert_eq!(
+            sql,
+            "COALESCE((metadata ->> $8) ~ '^[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?$' \
+             AND (metadata ->> $8)::numeric > ($9)::numeric, false)"
+        );
+        // Key referenced twice but bound once; value is $9.
+        assert_eq!(binds, vec!["n".to_string(), "5".to_string()]);
+    }
+
+    #[test]
+    fn numeric_exponent_value_emits_cast() {
+        // Exponent notation parses to a finite f64 and casts to numeric, so it emits the guard.
+        let l = MetaLeaf { kind: MetaKind::Numeric, op: Some(MetaOp::Gt), ..leaf("n", "1.5e3") };
+        let (sql, binds) = build(&MetaFilter::Leaf(l));
+        assert!(sql.starts_with("COALESCE((metadata ->> $8) ~"), "exponent value casts, got {sql}");
+        assert_eq!(binds, vec!["n".to_string(), "1.5e3".to_string()]);
+    }
+
+    #[test]
+    fn numeric_non_finite_value_emits_false_no_binds() {
+        // inf/nan parse as f64 but cannot cast to numeric, so they must not reach the query.
+        for v in ["inf", "nan", "Infinity"] {
+            let l = MetaLeaf { kind: MetaKind::Numeric, op: Some(MetaOp::Gt), ..leaf("n", v) };
+            let (sql, binds) = build(&MetaFilter::Leaf(l));
+            assert_eq!(sql, "false", "{v} must emit false");
+            assert!(binds.is_empty(), "{v} binds nothing");
+        }
+    }
+
+    #[test]
+    fn and_or_nesting_is_parenthesized() {
+        let tree = MetaFilter::Or(vec![
+            MetaFilter::Leaf(leaf("team", "infra")),
+            MetaFilter::And(vec![
+                MetaFilter::Leaf(leaf("env", "prod")),
+                MetaFilter::Leaf(leaf("tier", "gold")),
+            ]),
+        ]);
+        let (sql, binds) = build(&tree);
+        assert_eq!(
+            sql,
+            "(COALESCE((metadata ->> $8) = $9, false) OR \
+             (COALESCE((metadata ->> $10) = $11, false) AND \
+             COALESCE((metadata ->> $12) = $13, false)))"
+        );
+        // Binds are appended in emission (depth-first, left-to-right) order.
+        assert_eq!(
+            binds,
+            vec![
+                "team".to_string(),
+                "infra".to_string(),
+                "env".to_string(),
+                "prod".to_string(),
+                "tier".to_string(),
+                "gold".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_and_imposes_no_constraint() {
+        let (sql, binds) = build(&MetaFilter::And(vec![]));
+        assert_eq!(sql, "true");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn empty_or_imposes_no_constraint() {
+        let (sql, binds) = build(&MetaFilter::Or(vec![]));
+        assert_eq!(sql, "true");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn depth_exceeded_emits_false() {
+        // Nest AND combiners deeper than the cap; the innermost node is never reached.
+        let mut node = MetaFilter::Leaf(leaf("k", "v"));
+        for _ in 0..(META_FILTER_MAX_DEPTH + 2) {
+            node = MetaFilter::And(vec![node]);
+        }
+        let (sql, _) = build(&node);
+        // The outer combiners parenthesize down to the depth cap, which short-circuits to false.
+        assert!(sql.contains("false"), "deep tree short-circuits, got {sql}");
+        assert!(!sql.contains("metadata"), "the capped leaf is never rendered, got {sql}");
     }
 }

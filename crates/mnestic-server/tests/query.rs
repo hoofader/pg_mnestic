@@ -313,6 +313,34 @@ async fn search_and_profile_endpoints() {
         )
         .await
         .unwrap();
+    // Two more rows that LACK the `team` key but carry a numeric `level`, so the negate and
+    // numeric cases below have rows to exercise the SQL parity edges.
+    engine
+        .add_at(
+            tenant,
+            "user:fil",
+            &["org:9".to_string()],
+            "hiking at level three",
+            "conversation",
+            None,
+            None,
+            &serde_json::json!({"level": "3", "team": "infra"}),
+        )
+        .await
+        .unwrap();
+    engine
+        .add_at(
+            tenant,
+            "user:fil",
+            &["org:9".to_string()],
+            "hiking at level seven no team key",
+            "conversation",
+            None,
+            None,
+            &serde_json::json!({"level": "7"}),
+        )
+        .await
+        .unwrap();
 
     // An AND filter on team=infra keeps only the infra memory.
     let resp = app(state.clone())
@@ -328,9 +356,15 @@ async fn search_and_profile_endpoints() {
     let results = j["results"].as_array().unwrap();
     let teams: Vec<&str> =
         results.iter().filter_map(|r| r["metadata"]["team"].as_str()).collect();
-    assert_eq!(teams, vec!["infra"], "filter keeps only the infra memory, got {teams:?}");
+    // Two rows carry team=infra; the filter keeps exactly those and nothing else.
+    assert!(
+        !teams.is_empty() && teams.iter().all(|t| *t == "infra"),
+        "filter keeps only infra memories, got {teams:?}"
+    );
 
-    // `negate` flips the same predicate, keeping only the non-infra memory.
+    // `negate` flips the same predicate. A row that LACKS the `team` key matches under negate
+    // (missing-key + negate -> match), proving SQL parity with the Rust path. The level-7 row has
+    // no `team` key, so it is in the result but contributes no team string here.
     let resp = app(state.clone())
         .oneshot(post(
             "/v4/search",
@@ -340,13 +374,52 @@ async fn search_and_profile_endpoints() {
         .await
         .unwrap();
     let j = body_json(resp).await;
-    let teams: Vec<&str> = j["results"]
+    let results = j["results"].as_array().unwrap();
+    // No surviving row may carry team=infra.
+    assert!(
+        results.iter().all(|r| r["metadata"]["team"].as_str() != Some("infra")),
+        "negate excludes every infra row"
+    );
+    // The missing-key row (level 7, no team) survives negate, matching the Rust path.
+    assert!(
+        results.iter().any(|r| r["metadata"]["level"].as_str() == Some("7")),
+        "missing-key row survives negate, got {results:?}"
+    );
+
+    // A numeric `>` filter returns only rows whose `level` is above the value (level 7, not 3).
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"hiking","containerTag":"org:9:user:fil","filters":{"AND":[{"key":"level","value":"5","filterType":"numeric","numericOperator":">"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let levels: Vec<&str> = j["results"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|r| r["metadata"]["team"].as_str())
+        .filter_map(|r| r["metadata"]["level"].as_str())
         .collect();
-    assert_eq!(teams, vec!["sales"], "negated filter keeps only the non-infra memory, got {teams:?}");
+    assert_eq!(levels, vec!["7"], "numeric > keeps only the level-7 row, got {levels:?}");
+
+    // An AND of two keys requires both: team=infra AND level=3 matches only the level-3 infra row.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"hiking","containerTag":"org:9:user:fil","filters":{"AND":[{"key":"team","value":"infra"},{"key":"level","value":"3"}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let results = j["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "AND of two keys matches exactly one row, got {results:?}");
+    assert_eq!(results[0]["metadata"]["team"].as_str(), Some("infra"));
+    assert_eq!(results[0]["metadata"]["level"].as_str(), Some("3"));
 
     // A filter that matches nothing returns an empty result set, not an error.
     let resp = app(state.clone())
@@ -379,5 +452,8 @@ async fn search_and_profile_endpoints() {
         .iter()
         .filter_map(|r| r["metadata"]["team"].as_str())
         .collect();
-    assert_eq!(teams, vec!["infra"], "profile filter keeps only the infra memory, got {teams:?}");
+    assert!(
+        !teams.is_empty() && teams.iter().all(|t| *t == "infra"),
+        "profile filter keeps only infra memories, got {teams:?}"
+    );
 }

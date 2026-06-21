@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
-use crate::filter::{matches, FilterNode};
+use crate::filter::{matches, to_meta_filter, FilterNode};
 use crate::{clamp_limit, resolve_container_tag, AppState};
 
 /// Candidate pool when `filters` or `threshold` will thin the results in Rust (not in SQL), so
@@ -114,10 +114,14 @@ pub async fn search(
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
     let limit = clamp_limit(req.limit);
-    // Both `filters` (post-fetch retain) and `threshold` (relative cutoff) thin the result set, so
-    // either one means we must pull more than `limit` to still land `limit` survivors.
-    let overfetch = req.filters.is_some() || req.threshold.is_some();
+    // The document/chunk path filters in Rust over an over-fetched pool (document metadata lives on
+    // a joined table). The memory path pushes the filter into SQL, so it is exact and needs no
+    // filter over-fetch. `threshold` is always a Rust cutoff, so it always over-fetches.
+    let doc_mode = matches!(req.search_mode.as_deref(), Some("documents") | Some("hybrid"));
+    let overfetch = req.threshold.is_some() || (req.filters.is_some() && doc_mode);
     let recall_limit = if overfetch { filter_pool(limit) } else { limit };
+    // For the memory path the filter is pushed into SQL; the document path still retains in Rust.
+    let meta_filter = req.filters.as_ref().map(to_meta_filter);
 
     // Time only the engine fetch(es), not the in-Rust filter/threshold/truncate.
     let started = Instant::now();
@@ -130,9 +134,17 @@ pub async fn search(
             .map(to_doc_result)
             .collect(),
         Some("hybrid") => {
+            // Memories are filtered in SQL; the document half is filtered by the Rust retain below.
             let mem = state
                 .engine
-                .recall_scoped(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+                .recall_scoped(
+                    tenant,
+                    &actor_id,
+                    &container_tags,
+                    &req.q,
+                    recall_limit,
+                    meta_filter.as_ref(),
+                )
                 .await?;
             let docs = state
                 .engine
@@ -149,7 +161,14 @@ pub async fn search(
         // `memories`, absent, and any unknown value keep the original memory-recall behavior.
         _ => state
             .engine
-            .recall_scoped(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+            .recall_scoped(
+                tenant,
+                &actor_id,
+                &container_tags,
+                &req.q,
+                recall_limit,
+                meta_filter.as_ref(),
+            )
             .await?
             .into_iter()
             .map(to_result)
@@ -157,8 +176,11 @@ pub async fn search(
     };
     let timing = started.elapsed().as_millis() as u64;
 
-    if let Some(filter) = &req.filters {
-        results.retain(|r| matches(filter, &r.metadata));
+    // Memory hits are already filtered in SQL; only document hits (which carry `chunk`) still need
+    // the Rust retain. In hybrid mode that means re-checking only the document half, so a memory
+    // hit kept by SQL is never second-guessed by a slightly different Rust evaluation.
+    if let (Some(filter), true) = (&req.filters, doc_mode) {
+        results.retain(|r| r.chunk.is_none() || matches(filter, &r.metadata));
     }
     if let Some(threshold) = req.threshold {
         // Our `similarity` is a fused RRF score, not an absolute 0-1 cosine, so an absolute cutoff
@@ -237,21 +259,25 @@ pub async fn profile(
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
     let has_query = req.q.as_deref().is_some_and(|s| !s.trim().is_empty());
     let limit = clamp_limit(req.limit);
-    // Only the recall under a query is filtered, so over-fetch only when both hold; a no-query
-    // profile request never uses the recall, so the larger scan would be wasted.
-    let recall_limit = if has_query && req.filters.is_some() { filter_pool(limit) } else { limit };
+    // The filter is pushed into the recall SQL, so the profile recall is exact and needs no
+    // over-fetch.
+    let meta_filter = req.filters.as_ref().map(to_meta_filter);
     let started = Instant::now();
     let ctx = state
         .engine
-        .profile_query(tenant, &actor_id, &container_tags, req.q.as_deref().unwrap_or(""), recall_limit)
+        .profile_query(
+            tenant,
+            &actor_id,
+            &container_tags,
+            req.q.as_deref().unwrap_or(""),
+            limit,
+            meta_filter.as_ref(),
+        )
         .await?;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let search_results = has_query.then(|| {
-        let mut results: Vec<SearchResult> = ctx.relevant.into_iter().map(to_result).collect();
-        if let Some(filter) = &req.filters {
-            results.retain(|r| matches(filter, &r.metadata));
-            results.truncate(limit as usize);
-        }
+        // The recall already applied the filter in SQL; no Rust retain on this path.
+        let results: Vec<SearchResult> = ctx.relevant.into_iter().map(to_result).collect();
         let total = results.len();
         ProfileSearchResults { results, timing: elapsed_ms, total }
     });

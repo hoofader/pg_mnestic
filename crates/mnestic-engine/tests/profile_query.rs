@@ -70,7 +70,7 @@ async fn profile_query_returns_profile_and_relevant() {
     engine.add(tenant, "u", &tags, "the user drives a sedan", "conversation", None).await.unwrap();
 
     // A query returns the profile and the relevant memory.
-    let ctx = engine.profile_query(tenant, "u", &tags, "hiking", 5).await.unwrap();
+    let ctx = engine.profile_query(tenant, "u", &tags, "hiking", 5, None).await.unwrap();
     assert!(!ctx.profile.dynamic_ctx.is_empty(), "profile is populated");
     assert!(
         ctx.relevant.iter().any(|h| h.content.as_deref() == Some("the user likes hiking")),
@@ -78,7 +78,7 @@ async fn profile_query_returns_profile_and_relevant() {
     );
 
     // A blank query returns the profile with no recall.
-    let bare = engine.profile_query(tenant, "u", &tags, "   ", 5).await.unwrap();
+    let bare = engine.profile_query(tenant, "u", &tags, "   ", 5, None).await.unwrap();
     assert!(!bare.profile.dynamic_ctx.is_empty(), "profile still returned for a blank query");
     assert!(bare.relevant.is_empty(), "no recall runs for a blank query");
 }
