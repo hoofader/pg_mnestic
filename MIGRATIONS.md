@@ -25,6 +25,13 @@ migrations/0003_backfill_y.sql
 Shipped migrations are guarded by a checksum tripwire test (`shipped_migrations_are_frozen`
 in `crates/mnestic-store/src/lib.rs`). If you edit one, that test fails and points back here.
 
+This is also why the shipped migration files (`0001`-`0004`) still carry an
+`SPDX-License-Identifier: Apache-2.0` header even though the project relicensed to
+`AGPL-3.0-only`: their bytes are frozen, so changing the header would change the checksum and
+break every database that already applied them. They keep the header they shipped with; new
+migrations (`0005` onward) carry the current `AGPL-3.0-only` header. The project license is
+set by `LICENSE` and the workspace `license` field, not by a frozen file's comment.
+
 ## Writing a new migration
 
 - One concern per file. Keep it forward-only; we do not run `down` migrations.
