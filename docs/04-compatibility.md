@@ -145,7 +145,8 @@ Every SDK method that targets the memory core is served and asserted by an integ
 | `client.profile` | `POST /v4/profile` | Done. `profile.static`/`dynamic` + optional `searchResults`. |
 | `client.memories.forget` | `DELETE /v4/memories` | Done. By `id` (actor-scoped) or `content`. |
 | `client.memories.updateMemory` | `PATCH /v4/memories` | Done. Versioned supersede; carries the memory class forward. |
-| `filters` (on the three read endpoints) | n/a | Done. Rust-side OR/AND tree over `metadata`; no dynamic SQL. |
+| `filters` (the three read endpoints) | n/a | Done. OR/AND tree over `metadata`. Pushed into SQL on the memory path (`/v4/search` memories, `/v4/profile`); Rust over the candidate pool on the document path. |
+| `searchMode` / `threshold` (`/v4/search`) | n/a | Done. `memories`/`documents`/`hybrid`; `threshold` is a relative cutoff (our score is fused RRF, not a 0-1 cosine). |
 
 Out of scope, by design (the SaaS platform surface, not the self-hosted memory engine):
 
@@ -156,10 +157,10 @@ Out of scope, by design (the SaaS platform surface, not the self-hosted memory e
 
 Known limitations:
 
-- `metadata` on the async ingest path (`dreaming: dynamic`) is dropped; the synchronous path stores it. Carrying it through the worker needs a `metadata` column on `mnestic_source`.
-- `filters` is evaluated over an over-fetched candidate pool (best-effort at extreme scale), not pushed into the SQL. `negate`/`ignoreCase` accept JSON booleans, not the SDK's `"true"`/`"false"` string forms.
-- `searchMode`, `threshold`, `rerank`, `aggregate`, and `include.forgottenMemories` on `/v4/search` are accepted (ignored) rather than honored; recall is always hybrid over latest active memories.
-- `entityContext` and `taskType` on `/v3/documents` are accepted and ignored (documents are not run through memory extraction).
+- `filters` on the document path (`/v3/search`, the document half of `hybrid`) is still evaluated in Rust over an over-fetched pool (best-effort at extreme scale), because document metadata lives on a joined table; the memory path is exact in SQL. Two narrow semantic divergences between the two: an `array_contains` leaf only matches string array elements in SQL (the Rust path also matches a number rendered as a string), and a `metadata`-equality leaf compares the stored text, so a JSON number with trailing zeros (`1.50`) does not string-equal `"1.5"`.
+- `rerank`, `aggregate`, and `include.forgottenMemories` on `/v4/search` are accepted (ignored): `rerank` needs a reranker model wired into the server, and recall is always over latest active memories.
+- `taskType` on `/v3/documents` is accepted and ignored (`superrag` routing is not branched); `entityContext` is accepted and ignored (documents are not run through memory extraction).
+- `threshold` is a cutoff relative to the strongest hit for the query, not supermemory's absolute score, because our `similarity` is a fused RRF value.
 
 ---
 
