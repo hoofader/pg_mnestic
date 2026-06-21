@@ -38,10 +38,30 @@ pub struct Leaf {
     pub filter_type: Option<String>,
     #[serde(default)]
     pub numeric_operator: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_loose_bool")]
     pub negate: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_loose_bool")]
     pub ignore_case: Option<bool>,
+}
+
+/// The SDK types `negate`/`ignoreCase` as `boolean | "true" | "false"`, so accept either a JSON
+/// boolean or those two strings; any other value (or null) reads as unset.
+fn de_loose_bool<'de, D>(d: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrStr {
+        Bool(bool),
+        Str(String),
+    }
+    Ok(match Option::<BoolOrStr>::deserialize(d)? {
+        Some(BoolOrStr::Bool(b)) => Some(b),
+        Some(BoolOrStr::Str(s)) if s == "true" => Some(true),
+        Some(BoolOrStr::Str(s)) if s == "false" => Some(false),
+        _ => None,
+    })
 }
 
 /// A malicious or buggy caller could nest combiners arbitrarily deep; cap recursion so the
@@ -266,6 +286,21 @@ mod tests {
         // The AND branch needs both keys; one alone does not satisfy it.
         assert!(!matches(&node, &json!({"env": "prod", "tier": "silver"})));
         assert!(!matches(&node, &json!({"team": "sales"})));
+    }
+
+    #[test]
+    fn string_form_booleans() {
+        // The SDK allows "true"/"false" strings for negate and ignoreCase.
+        let neg = parse(json!({"key": "team", "value": "infra", "negate": "true"}));
+        assert!(!matches(&neg, &json!({"team": "infra"})), "string negate inverts");
+        assert!(matches(&neg, &json!({"team": "sales"})), "string negate inverts a miss to a match");
+        let ci = parse(json!({"key": "team", "value": "INFRA", "ignoreCase": "true"}));
+        assert!(matches(&ci, &json!({"team": "infra"})), "string ignoreCase is honored");
+        // "false" strings read as false, and bool forms still work.
+        let off = parse(json!({"key": "team", "value": "INFRA", "ignoreCase": "false"}));
+        assert!(!matches(&off, &json!({"team": "infra"})), "ignoreCase=\"false\" stays case-sensitive");
+        let bool_form = parse(json!({"key": "team", "value": "infra", "negate": true}));
+        assert!(!matches(&bool_form, &json!({"team": "infra"})), "bool form still works");
     }
 
     #[test]
