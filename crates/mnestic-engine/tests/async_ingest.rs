@@ -140,8 +140,10 @@ async fn enqueue_then_worker_extracts() {
     let store = Store::new(app_pool.clone());
     let tags: Vec<String> = Vec::new();
 
-    // Enqueue defers extraction: the source exists but no memory yet.
-    let enq = engine.enqueue(tenant, "u", &tags, "raw conversation text", "conversation", Some("c1")).await.unwrap();
+    // Enqueue defers extraction: the source exists but no memory yet. The metadata rides on the
+    // source so the worker can tag the memory it extracts.
+    let meta = serde_json::json!({"team": "infra"});
+    let enq = engine.enqueue(tenant, "u", &tags, "raw conversation text about sailing", "conversation", Some("c1"), &meta).await.unwrap();
     assert!(enq.queued, "first enqueue is queued");
     assert!(
         engine.recall(tenant, "u", "sailing", 10).await.unwrap().is_empty(),
@@ -151,19 +153,23 @@ async fn enqueue_then_worker_extracts() {
     // A worker pass extracts the pending source and the memory becomes recallable.
     let n = engine.process_pending(tenant, 300, 10).await.unwrap();
     assert_eq!(n, 1, "one source processed");
-    assert!(
-        !engine.recall(tenant, "u", "sailing", 10).await.unwrap().is_empty(),
-        "memory recallable after extraction"
+    let hits = engine.recall(tenant, "u", "sailing", 10).await.unwrap();
+    assert!(!hits.is_empty(), "memory recallable after extraction");
+    // The metadata the request enqueued round-trips through the worker onto the memory.
+    assert_eq!(
+        hits[0].metadata,
+        serde_json::json!({"team": "infra"}),
+        "the worker tagged the extracted memory with the enqueued metadata"
     );
 
     // Re-enqueuing the same custom_id is an idempotent skip, and there is nothing left to do.
-    let again = engine.enqueue(tenant, "u", &tags, "raw conversation text", "conversation", Some("c1")).await.unwrap();
+    let again = engine.enqueue(tenant, "u", &tags, "raw conversation text about sailing", "conversation", Some("c1"), &meta).await.unwrap();
     assert!(!again.queued, "duplicate custom_id is not re-queued");
     assert_eq!(engine.process_pending(tenant, 300, 10).await.unwrap(), 0, "no pending work remains");
 
     // The lease keeps two workers off the same source: a fresh claim leases it, and an
     // immediate second claim (lease not expired) sees nothing.
-    engine.enqueue(tenant, "u", &tags, "another text", "conversation", Some("c2")).await.unwrap();
+    engine.enqueue(tenant, "u", &tags, "another text", "conversation", Some("c2"), &serde_json::json!({})).await.unwrap();
     let claim_a = store.claim_pending_source(tenant, 300).await.unwrap().expect("c2 claimable");
     assert!(
         store.claim_pending_source(tenant, 300).await.unwrap().is_none(),
@@ -206,8 +212,8 @@ async fn one_poison_source_does_not_block_the_batch() {
 
     // Two queued sources; extraction fails on the first claimed one (oldest), succeeds on the
     // next. The batch keeps going past the failure and commits the good one.
-    engine.enqueue(tenant, "u", &tags, "first", "conversation", Some("p1")).await.unwrap();
-    engine.enqueue(tenant, "u", &tags, "second", "conversation", Some("p2")).await.unwrap();
+    engine.enqueue(tenant, "u", &tags, "first", "conversation", Some("p1"), &serde_json::json!({})).await.unwrap();
+    engine.enqueue(tenant, "u", &tags, "second", "conversation", Some("p2"), &serde_json::json!({})).await.unwrap();
     let processed = engine.process_pending(tenant, 300, 10).await.unwrap();
     assert_eq!(processed, 1, "the good source committed despite the poison one");
     assert!(

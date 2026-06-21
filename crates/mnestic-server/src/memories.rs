@@ -62,11 +62,20 @@ pub async fn add_memory(
         .map(|d| d.eq_ignore_ascii_case("dynamic"))
         .unwrap_or(false);
     if dynamic {
-        // Dynamic ingestion enqueues the raw source for out-of-band extraction, which does not
-        // yet carry the request's metadata, so it is dropped on this path for now.
+        // The metadata rides on the enqueued source so the worker tags its extracted memories
+        // the same way the sync path does.
+        let meta = normalize_metadata(req.metadata);
         let enq = state
             .engine
-            .enqueue(tenant, &actor_id, &container_tags, &req.content, "conversation", req.custom_id.as_deref())
+            .enqueue(
+                tenant,
+                &actor_id,
+                &container_tags,
+                &req.content,
+                "conversation",
+                req.custom_id.as_deref(),
+                &meta,
+            )
             .await?;
         let status = if enq.queued { "queued" } else { "skipped" };
         return Ok(Json(AddMemoryResponse {

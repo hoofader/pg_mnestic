@@ -66,6 +66,9 @@ pub struct PendingSource {
     pub container_tags: Vec<String>,
     pub content: String,
     pub claimed_at: DateTime<Utc>,
+    /// The metadata the request enqueued, so the worker tags its extracted memories the same
+    /// way the sync path does.
+    pub metadata: serde_json::Value,
 }
 
 /// Inputs to hybrid recall, bundled so `recall_memories` stays under the argument-count lint.
@@ -309,11 +312,12 @@ impl Store {
         custom_id: Option<&str>,
         // true for the async path: the row is enqueued and a worker extracts it later.
         needs_extraction: bool,
+        metadata: &serde_json::Value,
     ) -> Result<Option<Uuid>> {
         let id: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO mnestic_source \
-               (tenant_id, actor_id, container_tags, kind, raw, custom_id, needs_extraction) \
-             VALUES ($1, $2, $3, $4, jsonb_build_object('text', $5::text), $6, $7) \
+               (tenant_id, actor_id, container_tags, kind, raw, custom_id, needs_extraction, metadata) \
+             VALUES ($1, $2, $3, $4, jsonb_build_object('text', $5::text), $6, $7, $8) \
              ON CONFLICT (tenant_id, custom_id) DO NOTHING \
              RETURNING id",
         )
@@ -324,6 +328,7 @@ impl Store {
         .bind(content)
         .bind(custom_id)
         .bind(needs_extraction)
+        .bind(metadata)
         .fetch_optional(&mut **tx)
         .await?;
         Ok(id)
@@ -332,6 +337,7 @@ impl Store {
     /// Enqueue a source for out-of-band extraction (the `dreaming: dynamic` path): persist the
     /// raw content with `needs_extraction = true` and return without running the model. None
     /// means this (tenant, custom_id) was already ingested, so the caller treats it as a skip.
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue_source(
         &self,
         tenant_id: Uuid,
@@ -340,11 +346,21 @@ impl Store {
         kind: &str,
         content: &str,
         custom_id: Option<&str>,
+        metadata: &serde_json::Value,
     ) -> Result<Option<Uuid>> {
         let mut tx = self.begin_tenant(tenant_id).await?;
-        let id =
-            Self::insert_source_tx(&mut tx, tenant_id, actor_id, container_tags, kind, content, custom_id, true)
-                .await?;
+        let id = Self::insert_source_tx(
+            &mut tx,
+            tenant_id,
+            actor_id,
+            container_tags,
+            kind,
+            content,
+            custom_id,
+            true,
+            metadata,
+        )
+        .await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -369,7 +385,7 @@ impl Store {
                FOR UPDATE SKIP LOCKED \
                LIMIT 1 \
              ) \
-             RETURNING id, actor_id, container_tags, raw->>'text' AS content, claimed_at",
+             RETURNING id, actor_id, container_tags, raw->>'text' AS content, claimed_at, metadata",
         )
         .bind(tenant_id)
         .bind(lease_secs as f64)
@@ -382,6 +398,10 @@ impl Store {
             container_tags: r.get("container_tags"),
             content: r.get::<Option<String>, _>("content").unwrap_or_default(),
             claimed_at: r.get("claimed_at"),
+            // NOT NULL in schema; tolerate a NULL from a future backfill rather than panic.
+            metadata: r
+                .get::<Option<serde_json::Value>, _>("metadata")
+                .unwrap_or_else(|| serde_json::json!({})),
         }))
     }
 
@@ -1298,6 +1318,10 @@ mod tests {
         (
             4,
             "231ddb71199abdf22c74ce9c72f53032162e6a8e5e264f742abc21272afc1939d9c8a8d0ef0c5826aeac1ebb8fcfae3e",
+        ),
+        (
+            5,
+            "30bce045525a81f2f5c1234077c25b9099ba382da9b3ce627c766060bbb9365f1b06e4f1434c8ec4c8c524bc7a85146e",
         ),
     ];
 

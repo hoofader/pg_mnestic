@@ -302,6 +302,7 @@ impl Engine {
             req.content,
             req.custom_id,
             false,
+            req.metadata,
         )
         .await?
         {
@@ -447,6 +448,7 @@ impl Engine {
     /// source and return without running the model. A worker later extracts it via
     /// `process_pending`. `queued` is false when this (tenant, custom_id) was already
     /// ingested or enqueued, matching the sync path's idempotent skip.
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue(
         &self,
         tenant_id: Uuid,
@@ -455,10 +457,11 @@ impl Engine {
         content: &str,
         kind: &str,
         custom_id: Option<&str>,
+        metadata: &serde_json::Value,
     ) -> Result<EnqueueResult> {
         match self
             .store
-            .enqueue_source(tenant_id, actor_id, container_tags, kind, content, custom_id)
+            .enqueue_source(tenant_id, actor_id, container_tags, kind, content, custom_id, metadata)
             .await?
         {
             Some(source_id) => Ok(EnqueueResult {
@@ -519,10 +522,8 @@ impl Engine {
         };
         let (candidates, embeddings) = self.extract_and_embed(&pending.content, &ctx).await?;
         // kind is read only by source insertion, which already ran at enqueue, so it is inert
-        // here.
-        // Async ingestion does not yet carry the request's metadata: the enqueue path stores only
-        // the raw source, so the worker has nothing to thread here.
-        let empty = serde_json::json!({});
+        // here. The metadata rides on the claimed source, so the worker's memories carry what
+        // the request sent, matching the sync path.
         let req = WriteRequest {
             tenant_id,
             actor_id: &pending.actor_id,
@@ -531,7 +532,7 @@ impl Engine {
             kind: "conversation",
             custom_id: None,
             as_of: None,
-            metadata: &empty,
+            metadata: &pending.metadata,
             candidates: &candidates,
             embeddings: &embeddings,
         };
@@ -649,6 +650,7 @@ impl Engine {
             content,
             custom_id,
             false,
+            metadata,
         )
         .await?
         {
