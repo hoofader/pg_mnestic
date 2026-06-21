@@ -9,7 +9,7 @@ use std::time::Instant;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
-use mnestic_engine::RecallHit;
+use mnestic_engine::{ChunkHit, RecallHit};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::authenticate_request;
@@ -18,9 +18,9 @@ use crate::error::ApiError;
 use crate::filter::{matches, FilterNode};
 use crate::{clamp_limit, resolve_container_tag, AppState};
 
-/// Candidate pool when a `filters` tree is present. Filtering happens in Rust over the hits the
-/// engine returns, not in SQL, so over-fetch and then retain matches. The `* 4` gives headroom
-/// for a selective filter; `.min(200)` keeps the engine scan bounded.
+/// Candidate pool when `filters` or `threshold` will thin the results in Rust (not in SQL), so
+/// over-fetch and then retain survivors. The `* 4` gives headroom for a selective filter or a
+/// high cutoff; `.min(200)` keeps the engine scan bounded.
 fn filter_pool(limit: i64) -> i64 {
     limit.saturating_mul(4).min(200)
 }
@@ -31,6 +31,10 @@ pub struct SearchResult {
     pub id: String,
     /// Cleartext content, or null for an encrypted-at-rest row.
     pub memory: Option<String>,
+    /// Document-chunk text under `searchMode` `documents`/`hybrid`; absent for memory hits so
+    /// the SDK can tell the two apart on one result type (sdk-ts `memory?` vs `chunk?`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk: Option<String>,
     /// The fused relevance score (wire name `similarity`, what the shells read).
     pub similarity: f64,
     /// System time of the row (doc 04 §4 hit field).
@@ -43,9 +47,21 @@ fn to_result(h: RecallHit) -> SearchResult {
     SearchResult {
         id: h.id.to_string(),
         memory: h.content,
+        chunk: None,
         similarity: h.score,
         updated_at: h.recorded_at.map(|t| t.to_rfc3339()),
         metadata: h.metadata,
+    }
+}
+
+fn to_doc_result(h: ChunkHit) -> SearchResult {
+    SearchResult {
+        id: h.id.to_string(),
+        memory: None,
+        chunk: Some(h.content),
+        similarity: h.score,
+        updated_at: h.document_created_at.map(|t| t.to_rfc3339()),
+        metadata: h.document_metadata,
     }
 }
 
@@ -62,6 +78,13 @@ pub struct SearchRequest {
     /// Optional metadata-filter tree (sdk-ts `SearchMemoriesParams.filters`).
     #[serde(default)]
     pub filters: Option<FilterNode>,
+    /// `memories` (default/unknown), `documents`, or `hybrid` (sdk-ts `searchMode`). Lenient by
+    /// design: anything we don't recognize falls back to memory recall to preserve today's path.
+    #[serde(default)]
+    pub search_mode: Option<String>,
+    /// Optional relative cutoff in `[0, 1]` (sdk-ts `threshold`); see `search` for the semantics.
+    #[serde(default)]
+    pub threshold: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -74,9 +97,11 @@ pub struct SearchResponse {
     pub total: usize,
 }
 
-/// `filters`, when present, is applied in Rust over the retrieved candidate pool, not pushed
-/// into the SQL. At extreme scale a hit that matches the filter but ranks below the over-fetch
-/// pool will not be seen, so filtering is best-effort against the top candidates.
+/// Recall scoped to the actor. `searchMode` picks the corpus (memories, documents, or both),
+/// then `filters` and `threshold` thin the results in Rust over the retrieved candidate pool
+/// (not pushed into SQL). At extreme scale a hit that would survive but ranks below the
+/// over-fetch pool is not seen, so filtering and the cutoff are best-effort against the top
+/// candidates.
 pub async fn search(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -89,19 +114,66 @@ pub async fn search(
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
     let limit = clamp_limit(req.limit);
-    // Over-fetch only when a filter will thin the pool; without one, recall the exact `limit`.
-    let recall_limit = if req.filters.is_some() { filter_pool(limit) } else { limit };
+    // Both `filters` (post-fetch retain) and `threshold` (relative cutoff) thin the result set, so
+    // either one means we must pull more than `limit` to still land `limit` survivors.
+    let overfetch = req.filters.is_some() || req.threshold.is_some();
+    let recall_limit = if overfetch { filter_pool(limit) } else { limit };
+
+    // Time only the engine fetch(es), not the in-Rust filter/threshold/truncate.
     let started = Instant::now();
-    let hits = state
-        .engine
-        .recall_scoped(tenant, &actor_id, &container_tags, &req.q, recall_limit)
-        .await?;
+    let mut results: Vec<SearchResult> = match req.search_mode.as_deref() {
+        Some("documents") => state
+            .engine
+            .search_documents(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+            .await?
+            .into_iter()
+            .map(to_doc_result)
+            .collect(),
+        Some("hybrid") => {
+            let mem = state
+                .engine
+                .recall_scoped(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+                .await?;
+            let docs = state
+                .engine
+                .search_documents(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+                .await?;
+            // Memory and chunk scores come from independent indexes (different corpora, different
+            // RRF rank lists), so they are not comparable on one axis. Keep memories first, then
+            // documents, rather than merge-sorting by `similarity` across the two.
+            mem.into_iter()
+                .map(to_result)
+                .chain(docs.into_iter().map(to_doc_result))
+                .collect()
+        }
+        // `memories`, absent, and any unknown value keep the original memory-recall behavior.
+        _ => state
+            .engine
+            .recall_scoped(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+            .await?
+            .into_iter()
+            .map(to_result)
+            .collect(),
+    };
     let timing = started.elapsed().as_millis() as u64;
-    let mut results: Vec<SearchResult> = hits.into_iter().map(to_result).collect();
+
     if let Some(filter) = &req.filters {
         results.retain(|r| matches(filter, &r.metadata));
-        results.truncate(limit as usize);
     }
+    if let Some(threshold) = req.threshold {
+        // Our `similarity` is a fused RRF score, not an absolute 0-1 cosine, so an absolute cutoff
+        // would be meaningless across queries. We read `threshold` as a relative cutoff against the
+        // strongest hit for this query: keep hits scoring at least `threshold` of the top score.
+        // This diverges from supermemory, where `threshold` is an absolute score. In `hybrid` mode
+        // the top is taken over the concatenated list, and chunk scores carry no confidence/recency
+        // weighting, so a moderate cutoff can drop chunks even when relevant.
+        let top = results.iter().map(|r| r.similarity).fold(0.0_f64, f64::max);
+        if top > 0.0 {
+            results.retain(|r| r.similarity / top >= threshold);
+        }
+    }
+    // Hybrid concatenation and over-fetch can both exceed `limit`, so truncate on every path now.
+    results.truncate(limit as usize);
     let total = results.len();
     Ok(Json(SearchResponse { container_tag: tag, results, timing, total }))
 }

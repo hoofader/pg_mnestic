@@ -112,6 +112,115 @@ async fn search_and_profile_endpoints() {
     assert!(j["timing"].is_number(), "search carries timing");
     assert!(j["total"].is_number(), "search carries total");
     assert!(results.iter().all(|r| r["metadata"].is_object()), "each result carries a metadata object");
+    // Memory hits carry `memory` and never a `chunk` key (it is skipped when None).
+    assert!(results.iter().all(|r| r.get("chunk").is_none()), "memory hits omit chunk");
+
+    // Seed a document for the same actor so the searchMode/hybrid paths have a chunk to find.
+    engine
+        .ingest_document(
+            tenant,
+            "user:99",
+            &["org:7".to_string()],
+            Some("Doc"),
+            None,
+            "a note about climbing knots and belaying",
+            Some("dq"),
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+    // searchMode "documents" returns chunk hits: each entry carries a `chunk` string and null memory.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"climbing","containerTag":"org:7:user:99","searchMode":"documents"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let results = j["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "documents mode returns at least one chunk");
+    assert!(
+        results.iter().all(|r| r["chunk"].is_string() && r["memory"].is_null()),
+        "documents mode entries carry a chunk string and null memory, got {results:?}"
+    );
+
+    // searchMode "memories" (explicit) matches the default: memory set, no chunk key.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"climbing","containerTag":"org:7:user:99","searchMode":"memories"}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    let results = j["results"].as_array().unwrap();
+    assert!(
+        results.iter().any(|r| r["memory"].as_str() == Some("the user loves climbing")),
+        "memories mode returns the memory"
+    );
+    assert!(results.iter().all(|r| r.get("chunk").is_none()), "memories mode omits chunk");
+
+    // searchMode "hybrid" returns both kinds: at least one memory and at least one chunk.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"climbing","containerTag":"org:7:user:99","searchMode":"hybrid"}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    let results = j["results"].as_array().unwrap();
+    assert!(
+        results.iter().any(|r| r["memory"].is_string()),
+        "hybrid returns at least one memory hit, got {results:?}"
+    );
+    assert!(
+        results.iter().any(|r| r["chunk"].is_string()),
+        "hybrid returns at least one chunk hit, got {results:?}"
+    );
+
+    // Seed a second memory that is lexically irrelevant to "climbing". In RECALL_SQL a memory whose
+    // text matches the tsquery gets both a vec and a lex RRF contribution, while one that does not
+    // match the tsquery is dropped from the lex CTE and keeps only the vec contribution. So the
+    // matching memory scores roughly twice the non-matching one (mock embeddings are a hash, so the
+    // vec ranks are noise but bounded; the lex doubling dominates). A relative threshold of 0.9 thus
+    // deterministically keeps the strong hit and drops the weak one.
+    engine
+        .add(tenant, "user:99", &["org:7".to_string()], "the user dislikes loud music", "conversation", None)
+        .await
+        .unwrap();
+
+    // Without a threshold, both memories come back.
+    let resp = app(state.clone())
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"climbing","containerTag":"org:7:user:99"}"#))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    let memories: Vec<&str> =
+        j["results"].as_array().unwrap().iter().filter_map(|r| r["memory"].as_str()).collect();
+    assert!(memories.contains(&"the user loves climbing"), "strong hit present without threshold");
+    assert!(memories.contains(&"the user dislikes loud music"), "weak hit present without threshold");
+
+    // A high threshold keeps the strong hit and drops the weak one.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"climbing","containerTag":"org:7:user:99","threshold":0.9}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    let memories: Vec<&str> =
+        j["results"].as_array().unwrap().iter().filter_map(|r| r["memory"].as_str()).collect();
+    assert!(memories.contains(&"the user loves climbing"), "threshold keeps the strong hit");
+    assert!(!memories.contains(&"the user dislikes loud music"), "threshold drops the weak hit, got {memories:?}");
 
     // A malformed containerTag is rejected at the edge.
     let resp = app(state.clone())
