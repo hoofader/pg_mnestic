@@ -145,8 +145,10 @@ Every SDK method that targets the memory core is served and asserted by an integ
 | `client.profile` | `POST /v4/profile` | Done. `profile.static`/`dynamic` + optional `searchResults`. |
 | `client.memories.forget` | `DELETE /v4/memories` | Done. By `id` (actor-scoped) or `content`. |
 | `client.memories.updateMemory` | `PATCH /v4/memories` | Done. Versioned supersede; carries the memory class forward. |
-| `filters` (the three read endpoints) | n/a | Done. OR/AND tree over `metadata`. Pushed into SQL on the memory path (`/v4/search` memories, `/v4/profile`); Rust over the candidate pool on the document path. |
+| `filters` (the three read endpoints) | n/a | Done. OR/AND tree over `metadata`, pushed into SQL on both the memory and document paths (every key/value bound; operators from a closed enum). |
 | `searchMode` / `threshold` (`/v4/search`) | n/a | Done. `memories`/`documents`/`hybrid`; `threshold` is a relative cutoff (our score is fused RRF, not a 0-1 cosine). |
+| `include.forgottenMemories` (`/v4/search`) | n/a | Done. Surfaces tombstoned memories via a visibility gate in the recall SQL. |
+| `taskType` (`/v3/documents`) | n/a | Done. `memory` (default) extracts so the save is recallable via `/v4/search`; `superrag` keeps the chunk path. |
 
 Out of scope, by design (the SaaS platform surface, not the self-hosted memory engine):
 
@@ -155,12 +157,13 @@ Out of scope, by design (the SaaS platform surface, not the self-hosted memory e
 - Organization settings (`/v3/settings`), container-tag settings/merge/delete (`/v3/container-tags/*`), and scoped API keys (`/v3/auth/scoped-key`). Mnestic issues tenant-scoped keys through its own CLI.
 - The Memory Router LLM proxy (a separate product, see §4).
 
-Known limitations:
+Known limitations and remaining work:
 
-- `filters` on the document path (`/v3/search`, the document half of `hybrid`) is still evaluated in Rust over an over-fetched pool (best-effort at extreme scale), because document metadata lives on a joined table; the memory path is exact in SQL. Two narrow semantic divergences between the two: an `array_contains` leaf only matches string array elements in SQL (the Rust path also matches a number rendered as a string), and a `metadata`-equality leaf compares the stored text, so a JSON number with trailing zeros (`1.50`) does not string-equal `"1.5"`.
-- `rerank`, `aggregate`, and `include.forgottenMemories` on `/v4/search` are accepted (ignored): `rerank` needs a reranker model wired into the server, and recall is always over latest active memories.
-- `taskType` on `/v3/documents` is accepted and ignored (`superrag` routing is not branched); `entityContext` is accepted and ignored (documents are not run through memory extraction).
-- `threshold` is a cutoff relative to the strongest hit for the query, not supermemory's absolute score, because our `similarity` is a fused RRF value.
+- `rerank` (`/v4/search`) is accepted and ignored: it needs a reranker provider wired into the server. The engine already has a `Reranker` trait and recall reranks when one is set, but no provider is configured by default, and picking one (model and vendor) is a deployment decision. Wire a provider and gate it on the flag to honor it.
+- `aggregate` (`/v4/search`) is accepted and ignored: it needs a memory relation graph (the SDK's per-result `context` of parents/children/related with `updates`/`extends`/`derives` relations). Mnestic models a linear supersession chain, not a relation graph, so there is no data to aggregate yet.
+- `entityContext` (`/v3/documents`) is accepted and ignored (no per-container extraction guidance yet). `taskType: memory` extraction is synchronous; there is no `dreaming: dynamic` async option on `/v3/documents` (it exists on `/v4/memories`).
+- `threshold` is a cutoff relative to the strongest hit for the query, not supermemory's absolute score, because our `similarity` is a fused RRF value, not a 0-1 cosine.
+- One narrow filter divergence remains: a `metadata`-equality leaf compares the stored JSON text, so a number with trailing zeros (`1.50`) does not equal the string `"1.5"`. Pathological (JSON-number metadata filtered by a string value); documented rather than special-cased.
 
 ---
 
