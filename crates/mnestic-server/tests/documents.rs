@@ -89,12 +89,13 @@ async fn ingest_and_search_documents_endpoints() {
     let engine = Arc::new(Engine::new(Store::new(pool.clone()), embedder, extractor));
     let state = AppState { engine, limiter: mnestic_server::RateLimiter::disabled() };
 
-    // Ingest a document with a unique phrase under containerTag user:42.
+    // Ingest a document with a unique phrase under containerTag user:42. Chunk search reads only
+    // the superrag path, so the chunk-search ingests pin `taskType:superrag`.
     let resp = app(state.clone())
         .oneshot(post(
             "/v3/documents",
             "sk-test",
-            r#"{"content":"The mitochondria powerhouse note is unique here.","containerTag":"user:42","title":"Cells","customId":"d1","metadata":{"source":"wiki","page":7}}"#,
+            r#"{"content":"The mitochondria powerhouse note is unique here.","containerTag":"user:42","title":"Cells","customId":"d1","taskType":"superrag","metadata":{"source":"wiki","page":7}}"#,
         ))
         .await
         .unwrap();
@@ -138,13 +139,61 @@ async fn ingest_and_search_documents_endpoints() {
         .oneshot(post(
             "/v3/documents",
             "sk-test",
-            r#"{"content":"The mitochondria powerhouse note is unique here.","containerTag":"user:42","customId":"d1"}"#,
+            r#"{"content":"The mitochondria powerhouse note is unique here.","containerTag":"user:42","customId":"d1","taskType":"superrag"}"#,
         ))
         .await
         .unwrap();
     let j = body_json(resp).await;
     assert_eq!(j["status"], "skipped");
     assert_eq!(j["id"].as_str().unwrap(), first_doc_id, "skip returns the prior document id as a string");
+
+    // The default (no taskType) path extracts, so the save is recallable via /v4/search. This is
+    // the primary shell's broken loop: client.add hits /v3/documents, client.search.memories hits
+    // /v4/search.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v3/documents",
+            "sk-test",
+            r#"{"content":"the user loves sailing","containerTag":"user:42"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["status"], "ingested", "default path extracts a memory");
+    assert_eq!(j["chunks"].as_u64().unwrap(), 0, "memory path produces no chunks");
+
+    // The extracted memory is now recallable, proving the save->recall loop.
+    let resp = app(state.clone())
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"sailing","containerTag":"user:42"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let memories = j["results"].as_array().unwrap();
+    assert!(
+        memories.iter().any(|m| m["memory"].as_str().is_some_and(|s| s.contains("sailing"))),
+        "the extracted sailing memory is recalled via /v4/search, got {memories:?}"
+    );
+
+    // Idempotent skip on the memory path: re-ingesting the same customId is skipped and returns
+    // the prior source id (a string), like the superrag path.
+    let mem_body = r#"{"content":"the user enjoys kayaking","containerTag":"user:42","customId":"mem1"}"#;
+    let resp = app(state.clone()).oneshot(post("/v3/documents", "sk-test", mem_body)).await.unwrap();
+    let j = body_json(resp).await;
+    assert_eq!(j["status"], "ingested");
+    let mem_id = j["id"].as_str().expect("source id on the memory path").to_string();
+    let resp = app(state.clone()).oneshot(post("/v3/documents", "sk-test", mem_body)).await.unwrap();
+    let j = body_json(resp).await;
+    assert_eq!(j["status"], "skipped", "repeat customId on the memory path is skipped");
+    assert_eq!(j["id"].as_str().unwrap(), mem_id, "skip returns the prior source id");
+
+    // title/uri are RAG fields, rejected off the superrag path rather than silently dropped.
+    let resp = app(state.clone())
+        .oneshot(post("/v3/documents", "sk-test", r#"{"content":"x","containerTag":"user:42","title":"T"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "title needs taskType=superrag");
 
     // Empty content is a 400, and auth is required.
     let resp = app(state.clone())
@@ -164,7 +213,7 @@ async fn ingest_and_search_documents_endpoints() {
         .oneshot(post(
             "/v3/documents",
             "sk-test",
-            r#"{"content":"quantum entanglement primer for the alpha team","containerTag":"user:42","customId":"qa","metadata":{"team":"alpha"}}"#,
+            r#"{"content":"quantum entanglement primer for the alpha team","containerTag":"user:42","customId":"qa","taskType":"superrag","metadata":{"team":"alpha"}}"#,
         ))
         .await
         .unwrap();
@@ -173,7 +222,7 @@ async fn ingest_and_search_documents_endpoints() {
         .oneshot(post(
             "/v3/documents",
             "sk-test",
-            r#"{"content":"quantum entanglement primer for the beta team","containerTag":"user:42","customId":"qb","metadata":{"team":"beta"}}"#,
+            r#"{"content":"quantum entanglement primer for the beta team","containerTag":"user:42","customId":"qb","taskType":"superrag","metadata":{"team":"beta"}}"#,
         ))
         .await
         .unwrap();

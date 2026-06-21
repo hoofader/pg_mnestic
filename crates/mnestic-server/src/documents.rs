@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The document/RAG endpoints: `POST /v3/documents` (ingest) and `POST /v3/search`
-//! (chunk search). Same auth and containerTag scoping as the v4 memory endpoints;
-//! documents are stored as chunks, not run through memory extraction.
+//! (chunk search). Same auth and containerTag scoping as the v4 memory endpoints.
+//! `taskType` routes the ingest (doc 04 §3): the default `memory` runs extraction so the
+//! save is recallable via `/v4/search`; `superrag` keeps the chunk path that `/v3/search`
+//! reads.
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -34,6 +36,13 @@ pub struct IngestRequest {
     pub uri: Option<String>,
     #[serde(default)]
     pub custom_id: Option<String>,
+    /// Routes the ingest (doc 04 §3). Absent or `memory` (the default) runs memory extraction so
+    /// the save is recallable via `/v4/search`; `superrag` takes the chunk path that `/v3/search`
+    /// reads. Lenient like `searchMode`: an unknown value falls back to the extraction default.
+    #[serde(default)]
+    pub task_type: Option<String>,
+    // supermemory's `entityContext` (doc 04 §3) is accepted and ignored: we don't declare it, so
+    // serde drops it (no `deny_unknown_fields`) rather than rejecting a body that carries it.
     /// Caller key-value metadata, stored on the document and returned by `/v3/search`.
     /// Stored as-is; the supermemory shape (string/number/boolean/string[]) is not enforced.
     #[serde(default = "empty_object")]
@@ -43,10 +52,12 @@ pub struct IngestRequest {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestResponse {
-    /// The document id. Present on both a fresh ingest and an idempotent skip (the SDK types
-    /// the add response `id` as a string), resolved from the prior source on a skip.
+    /// The id of what was ingested: the source id on the memory path, the document id on the
+    /// superrag path. The SDK types the add response `id` as a string, and it is present on both a
+    /// fresh ingest and an idempotent skip (resolved from the prior source/document on a skip).
     pub id: Option<String>,
     pub status: String,
+    /// Zero on the memory path (extraction produces memories, not chunks).
     pub chunks: usize,
 }
 
@@ -67,26 +78,61 @@ pub async fn ingest_document(
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
 
+    // Only `superrag` takes the chunk path; everything else (absent, `memory`, or an unknown
+    // value) extracts, so the primary shell's `client.add` is recallable via `/v4/search`.
+    let superrag = req.task_type.as_deref() == Some("superrag");
+    // `title`/`uri` are document (RAG) fields. Reject them off the superrag path rather than drop
+    // them silently, so a caller that needs them learns they must use `taskType: superrag`.
+    if !superrag && (req.title.is_some() || req.uri.is_some()) {
+        return Err(ApiError::BadRequest("title and uri require taskType=superrag".into()));
+    }
+
+    if superrag {
+        let result = state
+            .engine
+            .ingest_document(
+                tenant,
+                &actor_id,
+                &container_tags,
+                req.title.as_deref(),
+                req.uri.as_deref(),
+                &req.content,
+                req.custom_id.as_deref(),
+                &req.metadata,
+            )
+            .await?;
+
+        let status = if result.idempotent_skip { "skipped" } else { "ingested" };
+        return Ok(Json(IngestResponse {
+            id: Some(result.document_id.to_string()),
+            status: status.to_string(),
+            chunks: result.chunk_ids.len(),
+        }));
+    }
+
+    // The default path extracts in-request: this calls the model synchronously (latency and
+    // token cost), and unlike `/v4/memories` there is no `dreaming: dynamic` async option here
+    // yet. `kind = "document"` (the source CHECK allows it) so provenance and the `custom_id`
+    // idempotency key reflect that this came in over `/v3/documents`.
     let result = state
         .engine
-        .ingest_document(
+        .add_at(
             tenant,
             &actor_id,
             &container_tags,
-            req.title.as_deref(),
-            req.uri.as_deref(),
             &req.content,
+            "document",
             req.custom_id.as_deref(),
+            None,
             &req.metadata,
         )
         .await?;
 
-    // The id is returned on both paths (the SDK types it a string); status distinguishes them.
     let status = if result.idempotent_skip { "skipped" } else { "ingested" };
     Ok(Json(IngestResponse {
-        id: Some(result.document_id.to_string()),
+        id: Some(result.source_id.to_string()),
         status: status.to_string(),
-        chunks: result.chunk_ids.len(),
+        chunks: 0,
     }))
 }
 
