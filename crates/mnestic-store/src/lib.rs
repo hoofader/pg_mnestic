@@ -850,6 +850,22 @@ impl Store {
         Ok(id)
     }
 
+    /// The document id for a source, so an idempotent re-ingest can return the prior
+    /// document's id instead of null (the SDK types the add response `id` as a string).
+    pub async fn document_id_by_source_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        source_id: Uuid,
+    ) -> Result<Option<Uuid>> {
+        sqlx::query_scalar(
+            "SELECT id FROM mnestic_document WHERE tenant_id = $1 AND source_id = $2 LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(source_id)
+        .fetch_optional(&mut **tx)
+        .await
+    }
+
     /// Insert one chunk of a document in the caller's tx. `content_tsv` is a generated
     /// column, so only `content` and `embedding` are supplied; returns the chunk id.
     pub async fn insert_chunk_tx(

@@ -101,7 +101,7 @@ async fn ingest_and_search_documents_endpoints() {
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
     assert_eq!(j["status"], "ingested");
-    assert!(j["id"].is_string(), "new document id returned");
+    let first_doc_id = j["id"].as_str().expect("new document id returned").to_string();
     assert!(j["chunks"].as_u64().unwrap() >= 1, "at least one chunk");
 
     // Document search finds a chunk carrying the phrase (lexical match drives it).
@@ -144,7 +144,7 @@ async fn ingest_and_search_documents_endpoints() {
         .unwrap();
     let j = body_json(resp).await;
     assert_eq!(j["status"], "skipped");
-    assert!(j["id"].is_null(), "skip returns no new document id");
+    assert_eq!(j["id"].as_str().unwrap(), first_doc_id, "skip returns the prior document id as a string");
 
     // Empty content is a 400, and auth is required.
     let resp = app(state.clone())

@@ -43,8 +43,8 @@ pub struct IngestRequest {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestResponse {
-    /// The document id (doc 04 §4 `{ id, status }`). Null on an idempotent skip, where
-    /// the prior ingest's document id is not re-resolved.
+    /// The document id. Present on both a fresh ingest and an idempotent skip (the SDK types
+    /// the add response `id` as a string), resolved from the prior source on a skip.
     pub id: Option<String>,
     pub status: String,
     pub chunks: usize,
@@ -81,12 +81,13 @@ pub async fn ingest_document(
         )
         .await?;
 
-    let (id, status) = if result.idempotent_skip {
-        (None, "skipped")
-    } else {
-        (Some(result.document_id.to_string()), "ingested")
-    };
-    Ok(Json(IngestResponse { id, status: status.to_string(), chunks: result.chunk_ids.len() }))
+    // The id is returned on both paths (the SDK types it a string); status distinguishes them.
+    let status = if result.idempotent_skip { "skipped" } else { "ingested" };
+    Ok(Json(IngestResponse {
+        id: Some(result.document_id.to_string()),
+        status: status.to_string(),
+        chunks: result.chunk_ids.len(),
+    }))
 }
 
 // The supermemory SDK groups matches per document (sdk-ts SearchDocumentsResponse.Result):

@@ -658,9 +658,14 @@ impl Engine {
                     Store::source_id_by_custom_id_tx(&mut tx, tenant_id, custom_id.unwrap_or(""))
                         .await?
                         .unwrap_or_default();
+                // Return the prior document's id so a skip still answers with a string id.
+                let document_id = Store::document_id_by_source_tx(&mut tx, tenant_id, existing)
+                    .await?
+                    .unwrap_or_default();
                 tx.commit().await?;
                 return Ok(DocumentResult {
                     source_id: existing,
+                    document_id,
                     idempotent_skip: true,
                     ..Default::default()
                 });
