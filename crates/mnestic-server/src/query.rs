@@ -85,6 +85,16 @@ pub struct SearchRequest {
     /// Optional relative cutoff in `[0, 1]` (sdk-ts `threshold`); see `search` for the semantics.
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// sdk-ts `SearchMemoriesParams.include`; `forgottenMemories` surfaces tombstoned memories.
+    #[serde(default)]
+    pub include: Option<Include>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Include {
+    #[serde(default)]
+    pub forgotten_memories: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -119,6 +129,8 @@ pub async fn search(
     let recall_limit = if overfetch { filter_pool(limit) } else { limit };
     // Pushed into SQL on both paths: the memory recall and the document chunk search.
     let meta_filter = req.filters.as_ref().map(to_meta_filter);
+    // When set, memory recall also returns forgotten (tombstoned) rows.
+    let include_forgotten = req.include.as_ref().and_then(|i| i.forgotten_memories).unwrap_or(false);
 
     // Time only the engine fetch(es), not the in-Rust threshold/truncate.
     let started = Instant::now();
@@ -147,6 +159,7 @@ pub async fn search(
                     &req.q,
                     recall_limit,
                     meta_filter.as_ref(),
+                    include_forgotten,
                 )
                 .await?;
             let docs = state
@@ -178,6 +191,7 @@ pub async fn search(
                 &req.q,
                 recall_limit,
                 meta_filter.as_ref(),
+                include_forgotten,
             )
             .await?
             .into_iter()

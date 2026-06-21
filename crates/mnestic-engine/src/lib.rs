@@ -139,7 +139,7 @@ impl Engine {
         query: &str,
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
-        self.recall_scoped(tenant_id, actor_id, &[], query, limit, None).await
+        self.recall_scoped(tenant_id, actor_id, &[], query, limit, None, false).await
     }
 
     /// Recall the actor's most relevant memories for a query, restricted to memories
@@ -154,6 +154,7 @@ impl Engine {
     ///
     /// The signature is provisional: it exposes no `search_mode`/`threshold` and
     /// returns the store row type. The document/chunk path is a later increment.
+    #[allow(clippy::too_many_arguments)]
     pub async fn recall_scoped(
         &self,
         tenant_id: Uuid,
@@ -162,6 +163,7 @@ impl Engine {
         query: &str,
         limit: i64,
         filter: Option<&MetaFilter>,
+        include_forgotten: bool,
     ) -> Result<Vec<RecallHit>> {
         let retrieval_query = match &self.rewriter {
             Some(r) => r.rewrite(query).await?,
@@ -191,6 +193,7 @@ impl Engine {
                 limit: pool,
                 as_of: None,
                 filter,
+                include_forgotten,
             })
             .await?;
 
@@ -603,7 +606,7 @@ impl Engine {
         let relevant = if query.trim().is_empty() {
             Vec::new()
         } else {
-            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit, filter).await?
+            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit, filter, false).await?
         };
         Ok(ProfileContext { profile, relevant })
     }

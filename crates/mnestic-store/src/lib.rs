@@ -264,6 +264,9 @@ pub struct RecallParams<'a> {
     /// Optional metadata filter pushed into SQL so a selective filter returns exact results at
     /// scale (no Rust over-fetch + retain on the memory recall path).
     pub filter: Option<&'a MetaFilter>,
+    /// When true, recall also returns forgotten (tombstoned) rows, not just the active set
+    /// (the SDK's `include.forgottenMemories`).
+    pub include_forgotten: bool,
 }
 
 /// One ranked memory returned by hybrid recall.
@@ -980,6 +983,7 @@ impl Store {
             limit,
             as_of,
             filter,
+            include_forgotten,
         } = p;
         let qvec = vec_literal(query_embedding);
         let mut tx = self.begin_tenant(tenant_id).await?;
@@ -992,18 +996,29 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
         }
+        // Visibility gate: the active set (latest, not expired) plus, when asked, forgotten rows.
+        // This is a fixed, server-controlled fragment (no caller text), spliced into both CTEs.
+        let visibility = if include_forgotten {
+            "((is_latest AND status = 'active' AND (forget_after IS NULL OR forget_after > now())) \
+              OR status = 'forgotten')"
+        } else {
+            "(is_latest AND status = 'active' AND (forget_after IS NULL OR forget_after > now()))"
+        };
         // The 7 fixed binds are $1..$7, so a filter predicate's binds start at $8. The same
         // predicate text (and so the same $8.. placeholders) is spliced into both the vec and lex
         // CTEs; a placeholder referenced twice binds once, so the values are appended only once.
         let mut filter_binds: Vec<String> = Vec::new();
-        let sql = match filter {
+        let filter_clause = match filter {
             Some(f) => {
                 let mut next = 8usize;
                 let predicate = f.to_sql("metadata", &mut next, &mut filter_binds, 0);
-                RECALL_SQL_TEMPLATE.replace("{filter}", &format!(" AND ({predicate})"))
+                format!(" AND ({predicate})")
             }
-            None => RECALL_SQL_TEMPLATE.replace("{filter}", ""),
+            None => String::new(),
         };
+        let sql = RECALL_SQL_TEMPLATE
+            .replace("{visibility}", visibility)
+            .replace("{filter}", &filter_clause);
         let mut q = sqlx::query(&sql)
             .bind(tenant_id)
             .bind(qvec)
@@ -1413,8 +1428,7 @@ const RECALL_SQL_TEMPLATE: &str = "\
 WITH vec AS ( \
   SELECT id, row_number() OVER (ORDER BY dist) AS rnk FROM ( \
     SELECT id, embedding <=> $2::halfvec AS dist FROM mnestic_memory \
-    WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
-      AND (forget_after IS NULL OR forget_after > now()) AND embedding IS NOT NULL \
+    WHERE tenant_id = $1 AND actor_id = $4 AND {visibility} AND embedding IS NOT NULL \
       AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]){filter} \
     ORDER BY embedding <=> $2::halfvec LIMIT greatest(50, $5) \
   ) t \
@@ -1423,8 +1437,7 @@ lex AS ( \
   SELECT id, row_number() OVER (ORDER BY lr DESC) AS rnk FROM ( \
     SELECT id, ts_rank(content_tsv, plainto_tsquery('english', $3)) AS lr \
     FROM mnestic_memory \
-    WHERE tenant_id = $1 AND actor_id = $4 AND is_latest AND status = 'active' \
-      AND (forget_after IS NULL OR forget_after > now()) \
+    WHERE tenant_id = $1 AND actor_id = $4 AND {visibility} \
       AND content_tsv @@ plainto_tsquery('english', $3) \
       AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]){filter} \
     ORDER BY lr DESC LIMIT greatest(50, $5) \

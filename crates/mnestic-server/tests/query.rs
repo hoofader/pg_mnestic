@@ -222,6 +222,40 @@ async fn search_and_profile_endpoints() {
     assert!(memories.contains(&"the user loves climbing"), "threshold keeps the strong hit");
     assert!(!memories.contains(&"the user dislikes loud music"), "threshold drops the weak hit, got {memories:?}");
 
+    // include.forgottenMemories surfaces tombstoned memories. Forget the weak memory; it drops
+    // from a normal search but returns when the flag is set.
+    let weak_id = engine
+        .recall(tenant, "user:99", "music", 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|h| h.content.as_deref() == Some("the user dislikes loud music"))
+        .expect("weak memory present")
+        .id;
+    engine.forget_by_id(tenant, "user:99", weak_id, Some("test")).await.unwrap();
+    let resp = app(state.clone())
+        .oneshot(post("/v4/search", "sk-test", r#"{"q":"music","containerTag":"org:7:user:99"}"#))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert!(
+        !j["results"].as_array().unwrap().iter().any(|r| r["memory"] == "the user dislikes loud music"),
+        "forgotten memory is absent from a normal search"
+    );
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"music","containerTag":"org:7:user:99","include":{"forgottenMemories":true}}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert!(
+        j["results"].as_array().unwrap().iter().any(|r| r["memory"] == "the user dislikes loud music"),
+        "include.forgottenMemories surfaces the tombstoned memory"
+    );
+
     // A malformed containerTag is rejected at the edge.
     let resp = app(state.clone())
         .oneshot(post("/v4/search", "sk-test", r#"{"q":"x","containerTag":"bad tag!"}"#))
