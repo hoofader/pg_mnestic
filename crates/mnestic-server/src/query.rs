@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
-use crate::filter::{matches, to_meta_filter, FilterNode};
+use crate::filter::{to_meta_filter, FilterNode};
 use crate::{clamp_limit, resolve_container_tag, AppState};
 
 /// Candidate pool when `filters` or `threshold` will thin the results in Rust (not in SQL), so
@@ -97,11 +97,10 @@ pub struct SearchResponse {
     pub total: usize,
 }
 
-/// Recall scoped to the actor. `searchMode` picks the corpus (memories, documents, or both),
-/// then `filters` and `threshold` thin the results in Rust over the retrieved candidate pool
-/// (not pushed into SQL). At extreme scale a hit that would survive but ranks below the
-/// over-fetch pool is not seen, so filtering and the cutoff are best-effort against the top
-/// candidates.
+/// Recall scoped to the actor. `searchMode` picks the corpus (memories, documents, or both).
+/// `filters` is pushed into SQL on both corpora (memory metadata and document metadata), so it is
+/// exact. `threshold` still thins the results in Rust over the over-fetched pool, so at extreme
+/// scale a hit ranked below the over-fetch pool is not seen; the cutoff is best-effort.
 pub async fn search(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -114,27 +113,31 @@ pub async fn search(
     let tag = resolve_container_tag(req.container_tag, req.container_tags)?;
     let Scope { actor_id, container_tags } = parse_container_tag(&tag);
     let limit = clamp_limit(req.limit);
-    // The document/chunk path filters in Rust over an over-fetched pool (document metadata lives on
-    // a joined table). The memory path pushes the filter into SQL, so it is exact and needs no
-    // filter over-fetch. `threshold` is always a Rust cutoff, so it always over-fetches.
-    let doc_mode = matches!(req.search_mode.as_deref(), Some("documents") | Some("hybrid"));
-    let overfetch = req.threshold.is_some() || (req.filters.is_some() && doc_mode);
+    // Both the memory and document paths push the filter into SQL, so it is exact and needs no
+    // filter over-fetch. `threshold` is always a Rust cutoff, so it alone forces an over-fetch.
+    let overfetch = req.threshold.is_some();
     let recall_limit = if overfetch { filter_pool(limit) } else { limit };
-    // For the memory path the filter is pushed into SQL; the document path still retains in Rust.
+    // Pushed into SQL on both paths: the memory recall and the document chunk search.
     let meta_filter = req.filters.as_ref().map(to_meta_filter);
 
-    // Time only the engine fetch(es), not the in-Rust filter/threshold/truncate.
+    // Time only the engine fetch(es), not the in-Rust threshold/truncate.
     let started = Instant::now();
     let mut results: Vec<SearchResult> = match req.search_mode.as_deref() {
         Some("documents") => state
             .engine
-            .search_documents(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+            .search_documents(
+                tenant,
+                &actor_id,
+                &container_tags,
+                &req.q,
+                recall_limit,
+                meta_filter.as_ref(),
+            )
             .await?
             .into_iter()
             .map(to_doc_result)
             .collect(),
         Some("hybrid") => {
-            // Memories are filtered in SQL; the document half is filtered by the Rust retain below.
             let mem = state
                 .engine
                 .recall_scoped(
@@ -148,7 +151,14 @@ pub async fn search(
                 .await?;
             let docs = state
                 .engine
-                .search_documents(tenant, &actor_id, &container_tags, &req.q, recall_limit)
+                .search_documents(
+                    tenant,
+                    &actor_id,
+                    &container_tags,
+                    &req.q,
+                    recall_limit,
+                    meta_filter.as_ref(),
+                )
                 .await?;
             // Memory and chunk scores come from independent indexes (different corpora, different
             // RRF rank lists), so they are not comparable on one axis. Keep memories first, then
@@ -176,12 +186,6 @@ pub async fn search(
     };
     let timing = started.elapsed().as_millis() as u64;
 
-    // Memory hits are already filtered in SQL; only document hits (which carry `chunk`) still need
-    // the Rust retain. In hybrid mode that means re-checking only the document half, so a memory
-    // hit kept by SQL is never second-guessed by a slightly different Rust evaluation.
-    if let (Some(filter), true) = (&req.filters, doc_mode) {
-        results.retain(|r| r.chunk.is_none() || matches(filter, &r.metadata));
-    }
     if let Some(threshold) = req.threshold {
         // Our `similarity` is a fused RRF score, not an absolute 0-1 cosine, so an absolute cutoff
         // would be meaningless across queries. We read `threshold` as a relative cutoff against the

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
 use crate::error::ApiError;
-use crate::filter::{matches, FilterNode};
+use crate::filter::{to_meta_filter, FilterNode};
 use crate::{clamp_limit, resolve_container_tag, AppState};
 
 fn empty_object() -> serde_json::Value {
@@ -216,10 +216,9 @@ fn group_by_document(hits: Vec<ChunkHit>) -> Vec<DocumentResult> {
     order.into_iter().filter_map(|id| by_doc.remove(&id)).collect()
 }
 
-/// `filters`, when present, is applied in Rust to each grouped document's `metadata` over the
-/// retrieved chunk pool, not pushed into the SQL. At extreme scale a document whose chunks all
-/// rank below the over-fetch budget will not be seen, so filtering is best-effort against the
-/// top candidates.
+/// `filters`, when present, is pushed into the chunk-search SQL over the document's `metadata`,
+/// so it is exact (the same machinery the memory recall path uses). Chunks are still over-fetched
+/// and grouped, because several top chunks can collapse into one document.
 pub async fn search_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -235,20 +234,15 @@ pub async fn search_documents(
     // over-fetch chunks and truncate to `limit` documents after grouping. Bounded so a large
     // limit can't fan the chunk scan out without a ceiling.
     let doc_limit = clamp_limit(req.limit) as usize;
-    // A filter retains only matching documents, so the grouped pool must be larger or filtering
-    // starves the result. Raise the ceiling to 400 chunks when a filter is present.
-    let chunk_ceiling = if req.filters.is_some() { 400 } else { 200 };
-    let chunk_budget = (doc_limit as i64).saturating_mul(8).clamp(50, chunk_ceiling);
+    let chunk_budget = (doc_limit as i64).saturating_mul(8).clamp(50, 200);
+    let meta_filter = req.filters.as_ref().map(to_meta_filter);
     let started = std::time::Instant::now();
     let hits = state
         .engine
-        .search_documents(tenant, &actor_id, &container_tags, &req.q, chunk_budget)
+        .search_documents(tenant, &actor_id, &container_tags, &req.q, chunk_budget, meta_filter.as_ref())
         .await?;
     let timing = started.elapsed().as_millis() as u64;
     let mut results = group_by_document(hits);
-    if let Some(filter) = &req.filters {
-        results.retain(|d| matches(filter, &d.metadata));
-    }
     results.truncate(doc_limit);
     let total = results.len();
     Ok(Json(DocSearchResponse { container_tag: tag, results, timing, total }))

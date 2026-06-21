@@ -80,7 +80,7 @@ async fn ingest_and_search_documents() {
     assert!(res.chunk_ids.len() > 1, "the document split into multiple chunks");
 
     // The chunk carrying the unique phrase ranks first for that query.
-    let hits = engine.search_documents(tenant, "u", &tags, "mitochondria powerhouse", 5).await.unwrap();
+    let hits = engine.search_documents(tenant, "u", &tags, "mitochondria powerhouse", 5, None).await.unwrap();
     assert!(!hits.is_empty(), "search returns chunks");
     assert!(
         hits[0].content.contains("mitochondria"),
@@ -96,12 +96,12 @@ async fn ingest_and_search_documents() {
         .unwrap();
     assert!(again.idempotent_skip, "repeat ingest is a skip");
     assert!(again.chunk_ids.is_empty(), "no new chunks on a skip");
-    let after = engine.search_documents(tenant, "u", &tags, "mitochondria powerhouse", 50).await.unwrap();
+    let after = engine.search_documents(tenant, "u", &tags, "mitochondria powerhouse", 50, None).await.unwrap();
     let matching = after.iter().filter(|h| h.content.contains("mitochondria")).count();
     assert_eq!(matching, 1, "the unique phrase was not duplicated by the repeat ingest");
 
     // Search is scoped to the owning actor.
-    let other = engine.search_documents(tenant, "v", &tags, "mitochondria powerhouse", 5).await.unwrap();
+    let other = engine.search_documents(tenant, "v", &tags, "mitochondria powerhouse", 5, None).await.unwrap();
     assert!(other.is_empty(), "another actor sees none of u's chunks");
 
     // Empty content is rejected, not stored as a chunk-less document.

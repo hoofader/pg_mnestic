@@ -1110,6 +1110,7 @@ impl Store {
     /// scoped by tenant, actor, and an optional container_tags filter. Chunks are
     /// immutable reference text, so there is no recency/confidence weighting or
     /// supersession; the score is the fused rank alone.
+    #[allow(clippy::too_many_arguments)]
     pub async fn search_chunks(
         &self,
         tenant_id: Uuid,
@@ -1118,6 +1119,7 @@ impl Store {
         query_text: &str,
         container_tags: &[String],
         limit: i64,
+        filter: Option<&MetaFilter>,
     ) -> Result<Vec<ChunkHit>> {
         let qvec = vec_literal(query_embedding);
         let mut tx = self.begin_tenant(tenant_id).await?;
@@ -1126,15 +1128,34 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
         }
-        let rows = sqlx::query(CHUNK_SEARCH_SQL)
+        // The 6 fixed binds are $1..$6, so a filter predicate's binds start at $7. The same
+        // predicate text (and so the same $7.. placeholders) is spliced into both CTEs; a
+        // placeholder referenced twice binds once, so the values are appended only once. The
+        // predicate is over `d.metadata`, so the document join is spliced in alongside it.
+        let mut filter_binds: Vec<String> = Vec::new();
+        let sql = match filter {
+            Some(f) => {
+                let mut next = 7usize;
+                let predicate = f.to_sql("d.metadata", &mut next, &mut filter_binds, 0);
+                CHUNK_SEARCH_TEMPLATE
+                    .replace("{docjoin}", " JOIN mnestic_document d ON d.id = c.document_id")
+                    .replace("{filter}", &format!(" AND ({predicate})"))
+            }
+            None => CHUNK_SEARCH_TEMPLATE
+                .replace("{docjoin}", "")
+                .replace("{filter}", ""),
+        };
+        let mut q = sqlx::query(&sql)
             .bind(tenant_id)
             .bind(qvec)
             .bind(query_text)
             .bind(actor_id)
             .bind(limit)
-            .bind(container_tags)
-            .fetch_all(&mut *tx)
-            .await?;
+            .bind(container_tags);
+        for v in &filter_binds {
+            q = q.bind(v);
+        }
+        let rows = q.fetch_all(&mut *tx).await?;
         tx.commit().await?;
         Ok(rows
             .into_iter()
@@ -1427,22 +1448,28 @@ LIMIT $5";
 // index-driven subqueries, fused by RRF), but chunks are immutable reference text, so
 // there is no is_latest/status/recency/confidence. Scoped by tenant, actor, and the
 // optional container_tags filter ($6). Binds match recall_memories: limit is $5.
-const CHUNK_SEARCH_SQL: &str = "\
+//
+// A document metadata filter is pushed into both CTEs (over `d.metadata`), so each
+// per-signal subquery joins the document and applies the predicate. The chunk table is
+// aliased `c` and its columns qualified in both subqueries, so the SQL is valid whether
+// or not the join is spliced in. With no filter, `{docjoin}` and `{filter}` are empty and
+// the result matches the unfiltered chunk search exactly.
+const CHUNK_SEARCH_TEMPLATE: &str = "\
 WITH vec AS ( \
   SELECT id, row_number() OVER (ORDER BY dist) AS rnk FROM ( \
-    SELECT id, embedding <=> $2::halfvec AS dist FROM mnestic_chunk \
-    WHERE tenant_id = $1 AND actor_id = $4 AND embedding IS NOT NULL \
-      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
-    ORDER BY embedding <=> $2::halfvec LIMIT greatest(50, $5) \
+    SELECT c.id, c.embedding <=> $2::halfvec AS dist FROM mnestic_chunk c{docjoin} \
+    WHERE c.tenant_id = $1 AND c.actor_id = $4 AND c.embedding IS NOT NULL \
+      AND (cardinality($6::text[]) = 0 OR c.container_tags @> $6::text[]){filter} \
+    ORDER BY c.embedding <=> $2::halfvec LIMIT greatest(50, $5) \
   ) t \
 ), \
 lex AS ( \
   SELECT id, row_number() OVER (ORDER BY lr DESC) AS rnk FROM ( \
-    SELECT id, ts_rank(content_tsv, plainto_tsquery('english', $3)) AS lr \
-    FROM mnestic_chunk \
-    WHERE tenant_id = $1 AND actor_id = $4 \
-      AND content_tsv @@ plainto_tsquery('english', $3) \
-      AND (cardinality($6::text[]) = 0 OR container_tags @> $6::text[]) \
+    SELECT c.id, ts_rank(c.content_tsv, plainto_tsquery('english', $3)) AS lr \
+    FROM mnestic_chunk c{docjoin} \
+    WHERE c.tenant_id = $1 AND c.actor_id = $4 \
+      AND c.content_tsv @@ plainto_tsquery('english', $3) \
+      AND (cardinality($6::text[]) = 0 OR c.container_tags @> $6::text[]){filter} \
     ORDER BY lr DESC LIMIT greatest(50, $5) \
   ) t \
 ), \

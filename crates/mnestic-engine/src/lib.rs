@@ -726,6 +726,9 @@ impl Engine {
     /// query rewriter (when set) expands the query first, matching recall; the memory
     /// reranker is not applied to chunks. Hits are chunk-level (`ChunkHit` carries the
     /// `document_id`); a caller wanting the document title/uri joins `mnestic_document`.
+    ///
+    /// An optional `filter` is pushed into SQL over `d.metadata` (document metadata), so a
+    /// selective filter returns exact results without the Rust over-fetch + retain.
     pub async fn search_documents(
         &self,
         tenant_id: Uuid,
@@ -733,6 +736,7 @@ impl Engine {
         container_tags: &[String],
         query: &str,
         limit: i64,
+        filter: Option<&MetaFilter>,
     ) -> Result<Vec<ChunkHit>> {
         let retrieval_query = match &self.rewriter {
             Some(r) => r.rewrite(query).await?,
@@ -743,7 +747,7 @@ impl Engine {
         check_embedding_dim(&qvec)?;
         Ok(self
             .store
-            .search_chunks(tenant_id, actor_id, &qvec, &retrieval_query, container_tags, limit)
+            .search_chunks(tenant_id, actor_id, &qvec, &retrieval_query, container_tags, limit, filter)
             .await?)
     }
 

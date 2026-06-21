@@ -131,7 +131,7 @@ fn matches_leaf(leaf: &Leaf, metadata: &serde_json::Value) -> bool {
     };
     let result = match leaf.filter_type.as_deref().unwrap_or("metadata") {
         "numeric" => eval_numeric(raw, &leaf.value, leaf.numeric_operator.as_deref()),
-        "array_contains" => eval_array_contains(raw, &leaf.value, ignore_case),
+        "array_contains" => eval_array_contains(raw, &leaf.value),
         "string_contains" => eval_string_contains(raw, &leaf.value, ignore_case),
         // "metadata" and any unknown type fall back to string equality.
         _ => eval_equality(raw, &leaf.value, ignore_case),
@@ -171,14 +171,15 @@ fn eval_numeric(raw: &serde_json::Value, value: &str, op: Option<&str>) -> bool 
     }
 }
 
-/// The value at the key is a JSON array containing the filter string. Non-string array elements
-/// are compared via their scalar rendering, so `["7"]` and `[7]` both contain `"7"`.
-fn eval_array_contains(raw: &serde_json::Value, value: &str, ignore_case: bool) -> bool {
+/// The value at the key is a JSON array containing the filter string. String-only and
+/// case-sensitive, matching the SQL path's `jsonb_exists` (which sees only string array
+/// elements and compares exactly), so `[7]` does not contain `"7"`.
+fn eval_array_contains(raw: &serde_json::Value, value: &str) -> bool {
     match raw.as_array() {
         Some(items) => items
             .iter()
-            .filter_map(json_scalar_string)
-            .any(|s| str_eq(&s, value, ignore_case)),
+            .filter_map(|v| v.as_str())
+            .any(|s| s == value),
         None => false,
     }
 }
@@ -289,9 +290,15 @@ mod tests {
         assert!(!matches(&node, &json!({"tags": ["python", "go"]})));
         // A non-array value at the key never "contains".
         assert!(!matches(&node, &json!({"tags": "rust"})));
-        // Numeric element rendered to a string still matches a string filter.
+        // String-only, matching the SQL `jsonb_exists` path: a numeric element does not match a
+        // string filter, even though both render to "7".
         let num = parse(json!({"key": "ids", "value": "7", "filterType": "array_contains"}));
-        assert!(matches(&num, &json!({"ids": [7, 8]})));
+        assert!(!matches(&num, &json!({"ids": [7, 8]})));
+        assert!(matches(&num, &json!({"ids": ["7", "8"]})));
+        // Case-sensitive, also matching the SQL path: ignoreCase does not relax the comparison.
+        let ci = parse(json!({"key": "tags", "value": "RUST", "filterType": "array_contains", "ignoreCase": true}));
+        assert!(!matches(&ci, &json!({"tags": ["rust"]})));
+        assert!(matches(&ci, &json!({"tags": ["RUST"]})));
     }
 
     #[test]

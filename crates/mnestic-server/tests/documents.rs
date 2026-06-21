@@ -248,7 +248,7 @@ async fn ingest_and_search_documents_endpoints() {
     assert_eq!(teams, vec!["alpha"], "doc filter keeps only the alpha document, got {teams:?}");
 
     // A non-matching filter returns no documents.
-    let resp = app(state)
+    let resp = app(state.clone())
         .oneshot(post(
             "/v3/search",
             "sk-test",
@@ -259,4 +259,45 @@ async fn ingest_and_search_documents_endpoints() {
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
     assert_eq!(j["results"].as_array().unwrap().len(), 0, "non-matching doc filter returns empty");
+
+    // A document that lacks the filtered key, ingested alongside the alpha/beta docs on the same
+    // search term but carrying no `team` metadata at all.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v3/documents",
+            "sk-test",
+            r#"{"content":"quantum entanglement primer with no team set","containerTag":"user:42","customId":"qn","taskType":"superrag","metadata":{"note":"orphan"}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // SQL parity for negate-on-missing-key: a negated equality on `team` returns the document that
+    // lacks the key (a missing key is not equal, so negate flips it to a match), and drops the
+    // alpha/beta docs whose `team` equals the value. This proves the SQL `NOT (COALESCE(...))`
+    // matches the Rust path's missing-key-negated rule.
+    let resp = app(state)
+        .oneshot(post(
+            "/v3/search",
+            "sk-test",
+            r#"{"q":"quantum entanglement","containerTag":"user:42","filters":{"AND":[{"key":"team","value":"alpha","negate":true}]}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let notes: Vec<&str> = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["metadata"]["note"].as_str())
+        .collect();
+    assert!(notes.contains(&"orphan"), "negated filter returns the doc missing the key, got {j:?}");
+    let teams: Vec<&str> = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["metadata"]["team"].as_str())
+        .collect();
+    assert!(!teams.contains(&"alpha"), "negated filter drops team=alpha, got {teams:?}");
 }
