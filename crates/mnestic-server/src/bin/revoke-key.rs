@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Revokes an API key. Build with `--features cli`.
 //! Usage: revoke-key <key-digest-hex | sm_token>

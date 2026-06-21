@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Cloud Anthropic (Claude) extractor. Gated behind the `anthropic` feature so the
 //! default build makes no network calls. Anthropic has no embeddings endpoint, so

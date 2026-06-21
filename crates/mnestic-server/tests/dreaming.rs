@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for the async REST path: POST /v4/memories with dreaming: dynamic returns
 //! "queued" without extracting, and a worker pass (process_pending) makes it recallable.

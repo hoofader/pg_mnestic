@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Claude-backed providers for real benchmark runs: the answerer and judge that
 //! score a run, plus the recall-quality rewriter and reranker the engine calls

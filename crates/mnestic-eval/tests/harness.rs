@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Proves the eval harness wiring end to end on real Postgres with mock providers:
 //! ingest a case, recall, answer, judge, and compute a MemScore. Real-model runs go

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for /v3/session, /v3/projects, and the MCP whoAmI/listProjects tools.
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Identity and projects: `GET /v3/session` (key validation, returns the user) and
 //! `GET /v3/projects` (the container tags in use). Both are read-only and auth-gated.

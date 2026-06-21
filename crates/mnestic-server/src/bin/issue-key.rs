@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Provisions a tenant and mints an API key. Build with `--features cli`.
 //! Usage: issue-key <tenant-external-id> [label]

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for the forget path: tombstoning by custom_id drops the memory
 //! from recall and the cached profile, is scoped to the owning actor, and is

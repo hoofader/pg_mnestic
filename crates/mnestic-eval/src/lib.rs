@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! memorybench-style evaluation harness for Mnestic: ingest a benchmark's prior
 //! conversations into memory, answer its questions from recall, and grade the

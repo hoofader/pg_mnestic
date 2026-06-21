@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for /v3/documents and /v3/search: ingest a document over HTTP, then
 //! find a chunk of it via document search. Driven with tower::oneshot + mock engine.

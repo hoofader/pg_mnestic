@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for key provisioning: issue_key mints an sm_ token, stores only its
 //! digest, and the cleartext round-trips through auth::authenticate back to its tenant.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Deterministic, network-free provider impls. Always built so the default test
 //! path stays offline.

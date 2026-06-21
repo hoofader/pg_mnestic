@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: Apache-2.0
+-- SPDX-License-Identifier: AGPL-3.0-only
 
 -- Versioned update (the SDK's PATCH /v4/memories): a new content row supersedes the prior
 -- one while history is preserved. version counts the edits along a lineage; root_memory_id

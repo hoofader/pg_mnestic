@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! The `/v4/memories` save endpoint. Maps the supermemory wire fields onto an engine
 //! `add`, scoping the actor and container tags from the `containerTag`.

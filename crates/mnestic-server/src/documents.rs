@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! The document/RAG endpoints: `POST /v3/documents` (ingest) and `POST /v3/search`
 //! (chunk search). Same auth and containerTag scoping as the v4 memory endpoints;

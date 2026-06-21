@@ -121,7 +121,7 @@ Settled in v0.2:
 Still open (settle before/early in implementation):
 1. **Embedding provider & dimension**: recommend a pluggable trait with a pinned default (OpenAI `text-embedding-3-small`, 1536 dims, stored as `halfvec` for space). The dimension is templated at install so larger models (e.g. `text-embedding-3-large` at 3072) and Matryoshka truncation are supported.
 2. **Extraction model**: which LLM(s) to target for extraction, and how to keep it swappable behind the `Extractor` trait.
-3. **License**: MIT vs Apache-2.0 vs source-available for any future hosted offering. Note: reusing the supermemory shells needs no fork (base-URL override), so their license does not constrain ours.
+3. **License**: settled on `AGPL-3.0-only` (copyleft, network-use clause). Reusing the supermemory shells needs no fork (base-URL override), so their license does not constrain ours.
 4. **Naming lock**: `mnestic` (brand/SDK) + `pg_mnestic` (extension). Reserve the domain and GitHub org before public commit.
 
 ---

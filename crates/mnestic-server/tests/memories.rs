@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for POST /v4/memories over the full stack: bearer auth via the
 //! api_key table, containerTag scoping, and a real engine (mock providers) writing to

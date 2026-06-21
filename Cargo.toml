@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 [workspace]
 resolver = "2"
 members = [
@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/mdashti/pg_mnestic"
 
 [workspace.dependencies]

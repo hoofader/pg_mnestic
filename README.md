@@ -55,4 +55,4 @@ cargo build -p mnestic-model --features openai
 
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE).
+AGPL-3.0-only. See [`LICENSE`](LICENSE).

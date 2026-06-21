@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: Apache-2.0
+-- SPDX-License-Identifier: AGPL-3.0-only
 
 -- API-key lifecycle. `label` lets an operator tell keys apart in a listing; `revoked_at`
 -- cuts off a leaked or rotated key without deleting the row, so the record that the key

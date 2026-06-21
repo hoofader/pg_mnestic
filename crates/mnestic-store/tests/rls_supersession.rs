@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized integration test: RLS isolation, single-valued supersession, and
 //! multi-valued coexistence against pgvector/pgvector:pg16. RLS is exercised as

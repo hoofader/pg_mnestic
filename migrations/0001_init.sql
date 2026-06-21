@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: Apache-2.0
+-- SPDX-License-Identifier: AGPL-3.0-only
 
 -- sqlx runs each migration inside its own transaction, so there is no explicit
 -- BEGIN/COMMIT here (an inner BEGIN would commit sqlx's surrounding transaction early).

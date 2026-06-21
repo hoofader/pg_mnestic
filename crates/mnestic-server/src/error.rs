@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! HTTP error mapping. An internal cause stays server-side; the public body is generic
 //! so a 500 never leaks schema, SQL, or upstream provider text.

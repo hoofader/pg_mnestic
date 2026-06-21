@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Run the Mnestic eval over a normalized dataset, against a live Postgres and real
 //! providers. Build with `--features real`.

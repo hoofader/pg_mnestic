@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Domain types, provider traits, and the pure resolution logic for Mnestic.
 //! No DB and no network live here, so the contradiction rules stay testable in

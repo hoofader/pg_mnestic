@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for per-key rate limiting: a key over its bucket gets 429, a different key
 //! has its own budget, unauthenticated /health is never limited, and a bad token is 401 (not

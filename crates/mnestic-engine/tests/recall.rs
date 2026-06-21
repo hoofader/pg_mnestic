@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized recall test against pgvector/pgvector:pg16. Populates memories via
 //! Engine::add, then checks hybrid recall ranks the relevant memory first and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Tenant and API-key provisioning. One key resolves to one tenant (the RLS boundary,
 //! doc 04 §2). Only the SHA-256 digest of a key is ever stored; the cleartext is returned

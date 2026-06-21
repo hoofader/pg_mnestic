@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for query-scoped profile: profile_query returns the cached
 //! profile plus the query-relevant memories, and a blank query returns the profile

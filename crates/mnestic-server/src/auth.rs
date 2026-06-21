@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Bearer-token auth. The API key is the only thing that selects a tenant (doc 04 §2),
 //! so this lookup is the security boundary; everything downstream is RLS-scoped to the

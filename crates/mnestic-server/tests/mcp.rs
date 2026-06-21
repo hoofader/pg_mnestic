@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for the MCP endpoint (POST /mcp): the JSON-RPC handshake, tools/list,
 //! and tools/call for memory(save) + recall, driven with tower::oneshot + mock engine.

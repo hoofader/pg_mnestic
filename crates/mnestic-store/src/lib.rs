@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Postgres access over sqlx. Runtime query functions only (no compile-time
 //! macros), so the build needs no DATABASE_URL.

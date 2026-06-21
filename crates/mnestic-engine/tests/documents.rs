@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for the document/RAG path: ingest chunks and embeds a document,
 //! search returns the chunk that lexically matches the query, ingestion is idempotent

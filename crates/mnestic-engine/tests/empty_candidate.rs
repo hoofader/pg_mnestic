@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test: empty-content candidates from the extractor must not abort ingest
 //! or store an empty memory. A real embedder rejects an empty string in a batch; the

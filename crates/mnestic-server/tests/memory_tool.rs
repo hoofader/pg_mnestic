@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for /v4/memory: save then content-based forget. Uses a structured
 //! extractor so the forget content resolves to a (subject, attribute) key that matches

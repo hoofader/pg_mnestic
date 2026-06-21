@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Exports everything held for one subject as JSON (GDPR right to access). Build with
 //! `--features cli`.

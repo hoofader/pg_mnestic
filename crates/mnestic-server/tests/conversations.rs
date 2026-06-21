@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for POST /v4/conversations: ingest a multi-message conversation once,
 //! recall the stored memory, and re-post the same conversationId as an idempotent skip.

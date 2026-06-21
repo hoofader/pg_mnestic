@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Convert a LongMemEval JSON file into Mnestic's normalized dataset, on stdout.
 //! No keys or network. Usage: `lme-convert longmemeval_s.json > dataset.json`.

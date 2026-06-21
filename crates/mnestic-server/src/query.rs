@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! The read endpoints: `/v4/search` (recall) and `/v4/profile` (profile plus
 //! query-relevant memories). Both scope the actor and container tags from the

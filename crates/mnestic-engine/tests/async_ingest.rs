@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Dockerized test for the async (dreaming: dynamic) path: enqueue defers extraction, a
 //! worker pass extracts and persists, idempotency holds, and the lease prevents two workers

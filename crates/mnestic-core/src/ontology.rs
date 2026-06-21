@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! Lexical normalization and a small synonym ontology, so surface variants of a
 //! subject or attribute ("lives in", "current city", "Location:") collapse to one

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 //! MCP transport (doc 04 §3) over a single `POST /mcp` JSON-RPC endpoint, so MCP
 //! clients (Claude Desktop, Cursor) drive Mnestic with the same tool names as the
