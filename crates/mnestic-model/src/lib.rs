@@ -21,3 +21,9 @@ pub mod anthropic;
 
 #[cfg(feature = "anthropic")]
 pub use anthropic::AnthropicExtractor;
+
+#[cfg(feature = "rerank")]
+pub mod tei;
+
+#[cfg(feature = "rerank")]
+pub use tei::TeiReranker;

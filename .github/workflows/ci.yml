@@ -41,4 +41,5 @@ jobs:
       # The integration tests start a throwaway pgvector container via testcontainers, so this
       # job depends on the ubuntu runner's preinstalled, running Docker daemon. The live
       # provider tests are #[ignore], so no API keys are needed.
-      - run: cargo test --workspace
+      # --all-features so feature-gated tests (e.g. the `rerank` TEI client) actually run.
+      - run: cargo test --workspace --all-features

@@ -87,21 +87,21 @@ async fn container_filter_scopes_recall() {
 
     // Scoped to proj-a: only the proj-a memory.
     let a = engine
-        .recall_scoped(tenant, "u", &["proj-a".to_string()], "fact", 10, None, false)
+        .recall_scoped(tenant, "u", &["proj-a".to_string()], "fact", 10, None, false, true)
         .await
         .unwrap();
     assert_eq!(contents(&a), vec!["alpha fact"], "proj-a filter returns only proj-a");
 
     // Scoped to proj-b: only the proj-b memory.
     let b = engine
-        .recall_scoped(tenant, "u", &["proj-b".to_string()], "fact", 10, None, false)
+        .recall_scoped(tenant, "u", &["proj-b".to_string()], "fact", 10, None, false, true)
         .await
         .unwrap();
     assert_eq!(contents(&b), vec!["beta fact"], "proj-b filter returns only proj-b");
 
     // Containment: a tag the memory does not carry returns nothing.
     let none = engine
-        .recall_scoped(tenant, "u", &["proj-a".to_string(), "proj-b".to_string()], "fact", 10, None, false)
+        .recall_scoped(tenant, "u", &["proj-a".to_string(), "proj-b".to_string()], "fact", 10, None, false, true)
         .await
         .unwrap();
     assert!(none.is_empty(), "requiring both tags matches neither memory");

@@ -143,6 +143,23 @@ The worker shares `MNESTIC_DB_MAX_CONNECTIONS`, `MNESTIC_EXTRACT_MODEL`, and the
 the server. Without a worker running, `dreaming: dynamic` sources stay queued and never become
 recallable, so deploy the worker whenever any client uses dynamic mode.
 
+## Reranker
+
+Set `MNESTIC_RERANK_URL` to a TEI (HuggingFace Text Embeddings Inference) rerank service to
+turn on reranking. The service is self-hosted, so the candidate text stays on your
+infrastructure. When set, recall pulls a larger candidate pool from hybrid retrieval and
+reranks it against the query before returning the top `limit`; a per-request `rerank: false`
+on `/v4/search` opts out for that call. Without the env var, recall ranks on RRF (vector +
+lexical) plus recency and confidence only.
+
+```bash
+MNESTIC_RERANK_URL=http://reranker:8080 \
+cargo run -p mnestic-server --features serve --bin serve
+```
+
+The reranker adds a network hop and its latency to every recall that uses it, so size the
+service for the search QPS and keep it close to the server (same network).
+
 ## Encryption at rest
 
 All persistent state is in Postgres, so encryption at rest is a database/storage-layer

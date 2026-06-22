@@ -10,8 +10,9 @@
 //! Logs: RUST_LOG sets levels (default `info`); set MNESTIC_LOG_FORMAT=json for structured
 //! output to ship to a log aggregator. MNESTIC_DB_MAX_CONNECTIONS sizes the Postgres pool
 //! (default 16). MNESTIC_EXTRACT_MODEL overrides the extraction model (default Opus 4.8) for
-//! a cheaper tier. On SIGTERM/SIGINT the server stops accepting connections and drains
-//! in-flight requests before exiting.
+//! a cheaper tier. MNESTIC_RERANK_URL, when set, points at a self-hosted TEI rerank service
+//! recall uses to reorder the candidate pool (see DEPLOYMENT.md). On SIGTERM/SIGINT the
+//! server stops accepting connections and drains in-flight requests before exiting.
 
 use std::sync::Arc;
 
@@ -38,7 +39,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_migrations(&pool).await?;
 
     let (embedder, extractor) = build_providers(openai_key, &anthropic_key);
-    let engine = Arc::new(Engine::new(Store::new(pool), embedder, extractor));
+    let mut engine = Engine::new(Store::new(pool), embedder, extractor);
+    // Attach a self-hosted TEI reranker when configured, so the candidate pool is reordered
+    // against the query without the text leaving the operator's infrastructure.
+    if let Ok(url) = std::env::var("MNESTIC_RERANK_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            engine = engine.with_reranker(Arc::new(mnestic_model::TeiReranker::new(url)));
+            tracing::info!(%url, "reranker enabled");
+        }
+    }
+    let engine = Arc::new(engine);
     let limiter = RateLimiter::from_env();
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

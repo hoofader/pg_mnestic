@@ -213,7 +213,7 @@ async fn recall_tool(state: &AppState, tenant: Uuid, args: &Value) -> Result<Str
 
     let hits = state
         .engine
-        .recall_scoped(tenant, &actor_id, &container_tags, query, limit, None, false)
+        .recall_scoped(tenant, &actor_id, &container_tags, query, limit, None, false, true)
         .await
         .map_err(scrub)?;
     let results: Vec<Value> = hits

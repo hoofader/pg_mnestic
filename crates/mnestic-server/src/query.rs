@@ -88,6 +88,10 @@ pub struct SearchRequest {
     /// sdk-ts `SearchMemoriesParams.include`; `forgottenMemories` surfaces tombstoned memories.
     #[serde(default)]
     pub include: Option<Include>,
+    /// sdk-ts `SearchMemoriesParams.rerank`. Opt out of reranking for this request even when a
+    /// reranker is configured; defaults to true so a configured reranker is used by default.
+    #[serde(default)]
+    pub rerank: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +135,8 @@ pub async fn search(
     let meta_filter = req.filters.as_ref().map(to_meta_filter);
     // When set, memory recall also returns forgotten (tombstoned) rows.
     let include_forgotten = req.include.as_ref().and_then(|i| i.forgotten_memories).unwrap_or(false);
+    // Default true so a configured reranker is applied unless the caller opts out.
+    let rerank = req.rerank.unwrap_or(true);
 
     // Time only the engine fetch(es), not the in-Rust threshold/truncate.
     let started = Instant::now();
@@ -160,6 +166,7 @@ pub async fn search(
                     recall_limit,
                     meta_filter.as_ref(),
                     include_forgotten,
+                    rerank,
                 )
                 .await?;
             let docs = state
@@ -192,6 +199,7 @@ pub async fn search(
                 recall_limit,
                 meta_filter.as_ref(),
                 include_forgotten,
+                rerank,
             )
             .await?
             .into_iter()

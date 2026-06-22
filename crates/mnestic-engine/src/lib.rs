@@ -139,7 +139,7 @@ impl Engine {
         query: &str,
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
-        self.recall_scoped(tenant_id, actor_id, &[], query, limit, None, false).await
+        self.recall_scoped(tenant_id, actor_id, &[], query, limit, None, false, true).await
     }
 
     /// Recall the actor's most relevant memories for a query, restricted to memories
@@ -147,7 +147,8 @@ impl Engine {
     /// rewriter is set, the query is expanded for retrieval (embedding + lexical).
     /// Hybrid retrieval then pulls a candidate pool, and when a reranker is set the
     /// pool is reranked against the user's original query before the top `limit` are
-    /// returned.
+    /// returned. `rerank` lets a caller opt out of that reordering per request even when
+    /// a reranker is configured: the pool is then kept at `limit` and no reorder runs.
     ///
     /// An optional `filter` is pushed into SQL so a selective metadata filter returns exact
     /// results at scale, without the Rust over-fetch + retain the document path still uses.
@@ -164,6 +165,7 @@ impl Engine {
         limit: i64,
         filter: Option<&MetaFilter>,
         include_forgotten: bool,
+        rerank: bool,
     ) -> Result<Vec<RecallHit>> {
         let retrieval_query = match &self.rewriter {
             Some(r) => r.rewrite(query).await?,
@@ -174,12 +176,10 @@ impl Engine {
         let qvec = embeddings.pop().unwrap_or_default();
         check_embedding_dim(&qvec)?;
 
-        // Pull a larger pool when reranking, so the reranker has candidates to reorder.
-        let pool = if self.reranker.is_some() {
-            limit.max(RERANK_POOL)
-        } else {
-            limit
-        };
+        // Pull a larger pool only when reranking will actually run, so the reranker has
+        // candidates to reorder. A per-request opt-out keeps the pool at `limit`.
+        let will_rerank = self.reranker.is_some() && rerank;
+        let pool = if will_rerank { limit.max(RERANK_POOL) } else { limit };
         // as_of is None: live recall decays toward now(). The store carries the as-of
         // capability for time-travel reads; no caller threads a past instant yet.
         let mut hits = self
@@ -197,7 +197,7 @@ impl Engine {
             })
             .await?;
 
-        if let Some(reranker) = &self.reranker {
+        if let (true, Some(reranker)) = (rerank, &self.reranker) {
             // Rerank against the original query (relevance to what the user asked, not
             // the expanded retrieval query). A None-content (encrypted) row is fed an
             // empty string and so sorts low; accepted for now, since the reranker has
@@ -606,7 +606,8 @@ impl Engine {
         let relevant = if query.trim().is_empty() {
             Vec::new()
         } else {
-            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit, filter, false).await?
+            self.recall_scoped(tenant_id, actor_id, container_tags, query, limit, filter, false, true)
+                .await?
         };
         Ok(ProfileContext { profile, relevant })
     }

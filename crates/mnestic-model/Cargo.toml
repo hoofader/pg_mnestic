@@ -10,6 +10,7 @@ repository.workspace = true
 default = []
 openai = ["dep:reqwest", "dep:serde_json", "dep:tokio", "dep:tracing"]
 anthropic = ["dep:reqwest", "dep:serde_json", "dep:tokio", "dep:tracing"]
+rerank = ["dep:reqwest", "dep:serde_json", "dep:tokio", "dep:tracing"]
 
 [dependencies]
 mnestic-core = { workspace = true }
@@ -25,3 +26,4 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+wiremock = "0.6"
