@@ -17,7 +17,8 @@ use uuid::Uuid;
 mod error;
 pub use error::{Error, Result};
 pub use mnestic_store::{
-    ChunkHit, MemoryVersion, MetaFilter, MetaKind, MetaLeaf, MetaOp, Profile, RecallHit,
+    ChunkHit, LineageRow, MemoryVersion, MetaFilter, MetaKind, MetaLeaf, MetaOp, Profile, RecallHit,
+    SourceRow,
 };
 
 /// An actor's durable profile plus the memories most relevant to a query. Backs the
@@ -224,6 +225,21 @@ impl Engine {
 
         hits.truncate(limit.max(0) as usize);
         Ok(hits)
+    }
+
+    /// The aggregate context for one memory: its supersession chain (other versions) and
+    /// the source it was extracted from. Keeps the server -> engine -> store layering so the
+    /// read handlers do not reach the store directly. Both reads are tenant- and
+    /// actor-scoped in the store.
+    pub async fn memory_context(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        memory_id: Uuid,
+    ) -> Result<(Vec<LineageRow>, Option<SourceRow>)> {
+        let chain = self.store.version_chain(tenant_id, actor_id, memory_id).await?;
+        let source = self.store.source_for_memory(tenant_id, actor_id, memory_id).await?;
+        Ok((chain, source))
     }
 
     /// Ingest raw text: extract candidate memories, embed them, then resolve and

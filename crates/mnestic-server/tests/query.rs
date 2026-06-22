@@ -470,7 +470,7 @@ async fn search_and_profile_endpoints() {
     assert_eq!(j["total"], 0, "total reflects the filtered set");
 
     // The same filter applies to /v4/profile's recall results.
-    let resp = app(state)
+    let resp = app(state.clone())
         .oneshot(post(
             "/v4/profile",
             "sk-test",
@@ -490,4 +490,132 @@ async fn search_and_profile_endpoints() {
         !teams.is_empty() && teams.iter().all(|t| *t == "infra"),
         "profile filter keeps only infra memories, got {teams:?}"
     );
+
+    // aggregate: seed a memory, then edit it so there is a 2-version chain (v2 supersedes v1).
+    // The edit (via the engine, the same path as PATCH /v4/memories) preserves the prior as
+    // history, so the latest version's aggregate context carries the prior chain version.
+    let state_agg = state;
+    engine
+        .add(tenant, "user:agg", &["org:1".to_string()], "the user enjoys sailing", "conversation", None)
+        .await
+        .unwrap();
+    let v1_id = engine
+        .recall(tenant, "user:agg", "sailing", 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|h| h.content.as_deref() == Some("the user enjoys sailing"))
+        .expect("seeded memory present")
+        .id;
+    let v2 = engine
+        .update_memory(
+            tenant,
+            "user:agg",
+            v1_id,
+            "the user enjoys sailing and kayaking",
+            None,
+            None,
+            &serde_json::json!({}),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("edit creates a new version");
+    let v2_id = v2.id.to_string();
+
+    // With aggregate, the latest version's result carries isAggregated, a context object with
+    // the prior chain version (relation "updates"), and a documents array (the source).
+    let resp = app(state_agg.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"kayaking","containerTag":"org:1:user:agg","aggregate":true}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"].as_str() == Some(v2_id.as_str()))
+        .expect("latest version present in aggregate search");
+    assert_eq!(hit["isAggregated"], true, "aggregate marks the result");
+    assert!(hit["context"].is_object(), "aggregate carries a context object");
+    // The prior version (v1) appears in parents or children, with relation "updates". v1 is an
+    // earlier version, so it lands in parents.
+    let chain: Vec<&serde_json::Value> = hit["context"]["parents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(hit["context"]["children"].as_array().unwrap().iter())
+        .collect();
+    assert!(
+        chain.iter().any(|n| n["relation"].as_str() == Some("updates")),
+        "the chain version has relation updates, got {chain:?}"
+    );
+    assert!(
+        hit["context"]["parents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["memory"].as_str() == Some("the user enjoys sailing")),
+        "the earlier version lands in parents, got {:?}",
+        hit["context"]["parents"]
+    );
+    // documents is always present under aggregate. The latest version is the edit row, which
+    // carries no source of its own (the source rode the prior version), so its documents array
+    // is empty; the source surfacing is asserted below on a memory that owns one.
+    assert!(hit["documents"].is_array(), "aggregate carries documents");
+
+    // A memory added directly (not edited) owns its source, so its documents array carries the
+    // source row, typed by the source kind.
+    engine
+        .add(tenant, "user:agg", &["org:1".to_string()], "the user owns a telescope", "conversation", None)
+        .await
+        .unwrap();
+    let resp = app(state_agg.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"telescope","containerTag":"org:1:user:agg","aggregate":true}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["memory"].as_str() == Some("the user owns a telescope"))
+        .expect("the source-owning memory present");
+    let docs = hit["documents"].as_array().unwrap();
+    assert!(!docs.is_empty(), "the memory's source surfaces as a document, got {docs:?}");
+    assert_eq!(docs[0]["type"].as_str(), Some("conversation"), "document type is the source kind");
+    assert!(docs[0]["id"].is_string(), "document carries the source id");
+    assert!(docs[0]["createdAt"].is_string() && docs[0]["updatedAt"].is_string(), "document carries timestamps");
+
+    // Without aggregate, the result shape is unchanged: no context/documents/isAggregated keys.
+    let resp = app(state_agg)
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"kayaking","containerTag":"org:1:user:agg"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"].as_str() == Some(v2_id.as_str()))
+        .expect("latest version present without aggregate");
+    assert!(hit.get("context").is_none(), "no context key without aggregate");
+    assert!(hit.get("documents").is_none(), "no documents key without aggregate");
+    assert!(hit.get("isAggregated").is_none(), "no isAggregated key without aggregate");
 }

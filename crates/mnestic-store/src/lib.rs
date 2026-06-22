@@ -333,6 +333,30 @@ pub struct NewMemoryFull<'a> {
     pub metadata: &'a serde_json::Value,
 }
 
+/// One other version in a memory's supersession chain (every row that shares the chain
+/// root, except the memory itself). `is_parent` is true for earlier versions (the chain
+/// before this one) and false for later ones, so the aggregate view can split the chain
+/// into parents and children without re-reading the root.
+#[derive(Debug, Clone)]
+pub struct LineageRow {
+    pub id: Uuid,
+    pub content: Option<String>,
+    pub version: i32,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub is_parent: bool,
+}
+
+/// The source row a memory was extracted from (its provenance document for the aggregate
+/// view). `ingested_at` doubles as the document's created/updated stamp on the wire.
+#[derive(Debug, Clone)]
+pub struct SourceRow {
+    pub id: Uuid,
+    pub ingested_at: DateTime<Utc>,
+    pub kind: String,
+    pub metadata: serde_json::Value,
+}
+
 /// The new row produced by a versioned update, with the lineage fields the SDK's
 /// `updateMemory` response carries: `parent_memory_id` is the row this one supersedes,
 /// `root_memory_id` the first version in the chain.
@@ -1259,6 +1283,96 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(tags)
+    }
+
+    /// The other versions in a memory's supersession chain, ordered by version. The chain
+    /// root is `coalesce(root_memory_id, id)` of the memory itself, and every version shares
+    /// that root via `root_memory_id = root OR id = root`. Each row is flagged `is_parent`
+    /// when its version is below the memory's, so the caller can split parents (earlier) from
+    /// children (later) without holding the root's version. Returns an empty Vec when the
+    /// memory has no other versions or is not visible under (tenant, actor).
+    pub async fn version_chain(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        memory_id: Uuid,
+    ) -> Result<Vec<LineageRow>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let head = sqlx::query(
+            "SELECT version, coalesce(root_memory_id, id) AS root FROM mnestic_memory \
+             WHERE tenant_id = $1 AND actor_id = $2 AND id = $3",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(memory_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(head) = head else {
+            tx.commit().await?;
+            return Ok(Vec::new());
+        };
+        let my_version: i32 = head.get("version");
+        let root: Uuid = head.get("root");
+        let rows = sqlx::query(
+            "SELECT id, content, version, lower(recorded_time) AS updated_at, metadata \
+             FROM mnestic_memory \
+             WHERE tenant_id = $1 AND actor_id = $2 \
+               AND (root_memory_id = $3 OR id = $3) AND id <> $4 \
+             ORDER BY version",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(root)
+        .bind(memory_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let version: i32 = r.get("version");
+                LineageRow {
+                    id: r.get("id"),
+                    content: r.get("content"),
+                    version,
+                    updated_at: r.get("updated_at"),
+                    metadata: r
+                        .get::<Option<serde_json::Value>, _>("metadata")
+                        .unwrap_or_else(|| serde_json::json!({})),
+                    is_parent: version < my_version,
+                }
+            })
+            .collect())
+    }
+
+    /// The source a memory was extracted from, joined through `source_id`. None when the
+    /// memory has no source or is not visible under (tenant, actor).
+    pub async fn source_for_memory(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        memory_id: Uuid,
+    ) -> Result<Option<SourceRow>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let row = sqlx::query(
+            "SELECT s.id, s.ingested_at, s.kind, s.metadata \
+             FROM mnestic_memory m JOIN mnestic_source s ON s.id = m.source_id \
+             WHERE m.tenant_id = $1 AND m.actor_id = $2 AND m.id = $3",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(memory_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|r| SourceRow {
+            id: r.get("id"),
+            ingested_at: r.get("ingested_at"),
+            kind: r.get("kind"),
+            metadata: r
+                .get::<Option<serde_json::Value>, _>("metadata")
+                .unwrap_or_else(|| serde_json::json!({})),
+        }))
     }
 
     /// An actor's documents (id, title) for the memory-graph view, newest first.

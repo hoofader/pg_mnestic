@@ -9,8 +9,9 @@ use std::time::Instant;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
-use mnestic_engine::{ChunkHit, RecallHit};
+use mnestic_engine::{ChunkHit, LineageRow, RecallHit, SourceRow};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::auth::authenticate_request;
 use crate::container_tag::{parse_container_tag, Scope};
@@ -41,6 +42,51 @@ pub struct SearchResult {
     pub updated_at: Option<String>,
     /// Caller metadata, `{}` until ingest stores any (sdk-ts types it required, nullable).
     pub metadata: serde_json::Value,
+    /// Aggregate view (sdk-ts SearchMemoriesResponse.Result `context`), present only when
+    /// the request set `aggregate`. None keeps the wire shape unchanged otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+    /// The source documents behind this memory (sdk-ts `documents`); set only when aggregating.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documents: Option<Vec<DocumentRef>>,
+    /// sdk-ts `isAggregated`. Set only when aggregating, so a plain search omits the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_aggregated: Option<bool>,
+}
+
+/// One related memory in the aggregate `context` (sdk-ts Node). For now `relation` is
+/// always `"updates"` (the supersession chain); the extends/derives lane lands later.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextNode {
+    pub memory: Option<String>,
+    pub relation: String,
+    pub updated_at: Option<String>,
+    pub metadata: serde_json::Value,
+    pub version: i32,
+}
+
+/// The aggregate `context` for a memory: earlier versions, later versions, and (later)
+/// extends/derives. `related` is empty until that lane lands.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryContext {
+    pub parents: Vec<ContextNode>,
+    pub children: Vec<ContextNode>,
+    pub related: Vec<ContextNode>,
+}
+
+/// One source document behind a memory (sdk-ts `documents` element). `created_at` and
+/// `updated_at` both carry the source's `ingested_at`, since a source is ingested once.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentRef {
+    pub id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub metadata: serde_json::Value,
+    #[serde(rename = "type")]
+    pub doc_type: Option<String>,
 }
 
 fn to_result(h: RecallHit) -> SearchResult {
@@ -51,6 +97,9 @@ fn to_result(h: RecallHit) -> SearchResult {
         similarity: h.score,
         updated_at: h.recorded_at.map(|t| t.to_rfc3339()),
         metadata: h.metadata,
+        context: None,
+        documents: None,
+        is_aggregated: None,
     }
 }
 
@@ -62,6 +111,33 @@ fn to_doc_result(h: ChunkHit) -> SearchResult {
         similarity: h.score,
         updated_at: h.document_created_at.map(|t| t.to_rfc3339()),
         metadata: h.document_metadata,
+        context: None,
+        documents: None,
+        is_aggregated: None,
+    }
+}
+
+/// Map a chain row to a context node. Relation is `"updates"` for every chain row, since
+/// these are all versions of the same memory.
+fn to_context_node(r: LineageRow) -> ContextNode {
+    ContextNode {
+        memory: r.content,
+        relation: "updates".to_string(),
+        updated_at: r.updated_at.map(|t| t.to_rfc3339()),
+        metadata: r.metadata,
+        version: r.version,
+    }
+}
+
+/// Map a source row to the one document reference behind a memory.
+fn to_document_ref(s: SourceRow) -> DocumentRef {
+    let at = s.ingested_at.to_rfc3339();
+    DocumentRef {
+        id: s.id.to_string(),
+        created_at: at.clone(),
+        updated_at: at,
+        metadata: s.metadata,
+        doc_type: Some(s.kind),
     }
 }
 
@@ -92,6 +168,10 @@ pub struct SearchRequest {
     /// reranker is configured; defaults to true so a configured reranker is used by default.
     #[serde(default)]
     pub rerank: Option<bool>,
+    /// sdk-ts `SearchMemoriesParams.aggregate`. When true, each memory hit is enriched with its
+    /// supersession `context` and `documents`. Absent/false leaves the wire shape unchanged.
+    #[serde(default)]
+    pub aggregate: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +302,30 @@ pub async fn search(
     }
     // Hybrid concatenation and over-fetch can both exceed `limit`, so truncate on every path now.
     results.truncate(limit as usize);
+
+    // Enrich after truncate, so at most `limit` extra context reads run regardless of the
+    // over-fetch pool. Document-mode (`chunk`) hits have no memory lineage, so they are left
+    // un-enriched. The enrichment is extra read work, so it stays outside the timed section,
+    // matching how the threshold/truncate are.
+    if req.aggregate == Some(true) {
+        for r in results.iter_mut() {
+            if r.chunk.is_some() {
+                continue;
+            }
+            let Ok(memory_id) = Uuid::parse_str(&r.id) else { continue };
+            let (chain, source) = state.engine.memory_context(tenant, &actor_id, memory_id).await?;
+            let (parents, children): (Vec<LineageRow>, Vec<LineageRow>) =
+                chain.into_iter().partition(|l| l.is_parent);
+            r.context = Some(MemoryContext {
+                parents: parents.into_iter().map(to_context_node).collect(),
+                children: children.into_iter().map(to_context_node).collect(),
+                related: Vec::new(),
+            });
+            r.documents = Some(source.into_iter().map(to_document_ref).collect());
+            r.is_aggregated = Some(true);
+        }
+    }
+
     let total = results.len();
     Ok(Json(SearchResponse { container_tag: tag, results, timing, total }))
 }
