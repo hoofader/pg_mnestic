@@ -54,3 +54,40 @@ jobs:
       # The live provider tests are #[ignore], so no API keys are needed.
       # --all-features so feature-gated tests (e.g. the `rerank` TEI client) actually run.
       - run: cargo test --workspace --all-features
+
+  conformance:
+    name: sdk conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/pg
+          file: docker/pg/Dockerfile
+          tags: mnestic-pg:dev
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Drive the real supermemory SDK against a live, keyless pg_mnestic (mock providers, so no
+      # API keys), proving the SDK is a drop-in client. See docs/05-clients.md.
+      - name: Run sdk-ts conformance
+        run: |
+          set -euo pipefail
+          docker run -d --name pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 mnestic-pg:dev
+          for _ in $(seq 1 30); do docker exec pg pg_isready -U postgres && break; sleep 2; done
+          cargo build --features serve --bin serve
+          cargo build --features cli --bin issue-key
+          export DATABASE_URL="postgres://postgres:postgres@localhost:5432/postgres"
+          MNESTIC_MOCK_PROVIDERS=1 MNESTIC_BIND=127.0.0.1:8080 ./target/debug/serve &
+          for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/health && break; sleep 1; done
+          TOKEN=$(./target/debug/issue-key conformance ci | sed -n 's/^token.*: //p')
+          cd conformance/sdk-ts
+          npm ci --no-audit --no-fund
+          SUPERMEMORY_BASE_URL=http://127.0.0.1:8080 SUPERMEMORY_API_KEY="$TOKEN" node conformance.mjs

@@ -26,8 +26,6 @@ use mnestic_store::{run_migrations, Store};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
     let dsn = std::env::var("DATABASE_URL")?;
-    let openai_key = std::env::var("OPENAI_API_KEY")?;
-    let anthropic_key = std::env::var("ANTHROPIC_API_KEY")?;
     let bind = std::env::var("MNESTIC_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let trust_proxy = std::env::var("MNESTIC_TRUST_PROXY")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -38,7 +36,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = connect_pool(&dsn).await?;
     run_migrations(&pool).await?;
 
-    let (embedder, extractor) = build_providers(openai_key, &anthropic_key);
+    // MNESTIC_MOCK_PROVIDERS swaps in network-free mock embedder/extractor, so the server runs
+    // with no API keys. It is for conformance and local demos (deterministic, no real embeddings
+    // or extraction), never production. Otherwise the real providers need their keys.
+    let mock_providers = std::env::var("MNESTIC_MOCK_PROVIDERS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let (embedder, extractor): (
+        Arc<dyn mnestic_core::Embedder>,
+        Arc<dyn mnestic_core::Extractor>,
+    ) = if mock_providers {
+        tracing::warn!("MNESTIC_MOCK_PROVIDERS set: using mock providers, not for production");
+        (Arc::new(mnestic_model::MockEmbedder), Arc::new(mnestic_model::MockExtractor))
+    } else {
+        let openai_key = std::env::var("OPENAI_API_KEY")?;
+        let anthropic_key = std::env::var("ANTHROPIC_API_KEY")?;
+        build_providers(openai_key, &anthropic_key)
+    };
     let mut engine = Engine::new(Store::new(pool), embedder, extractor);
     // Attach a self-hosted TEI reranker when configured, so the candidate pool is reordered
     // against the query without the text leaving the operator's infrastructure.

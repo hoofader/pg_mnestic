@@ -1,0 +1,15 @@
+{
+  "name": "mnestic-sdk-conformance",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "description": "Drives the official supermemory sdk-ts against a live pg_mnestic to prove drop-in client compatibility.",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "supermemory": "^4.24.2"
+  },
+  "scripts": {
+    "conformance": "node conformance.mjs"
+  }
+}
