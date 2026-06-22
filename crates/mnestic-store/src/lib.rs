@@ -662,6 +662,15 @@ impl Store {
         Ok(ids)
     }
 
+    /// Resolve the knowledge graph: fold the markers that index writes leave on memory rows
+    /// into the entity/edge catalog. It runs as the extension owner and so bypasses RLS to see
+    /// every tenant's rows, which is why the worker drives it rather than a request. Returns the
+    /// number of graphwright indexes maintained.
+    pub async fn graphwright_maintain(&self) -> Result<i64> {
+        let n: i64 = sqlx::query_scalar("SELECT graphwright.maintain()").fetch_one(&self.pool).await?;
+        Ok(n)
+    }
+
     /// Resolve an existing source id by its caller-supplied custom_id.
     pub async fn source_id_by_custom_id_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -1857,6 +1866,10 @@ mod tests {
         (
             6,
             "78bf24a712ea0d0894202cc883436f82b9bf7058af748f66f0113656e9bb13a6daf1471dd1ab5121887a34e0f67e0b41",
+        ),
+        (
+            7,
+            "02a95ecc0d93d0fba44f020bed4d2a2a36cf034db223073c91575a27dad8d96381cb7b3fcb24cb5730f252fcb31de514",
         ),
     ];
 

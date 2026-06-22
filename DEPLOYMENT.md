@@ -8,6 +8,13 @@ in any public registry, so run the image built by `docker/pg/Dockerfile` (pgvect
 `pg_graphwright` from source) or an equivalent. See `docker/pg/README.md`. The integration
 tests and CI use this same image, so the test database matches production.
 
+Migration `0007` runs `CREATE EXTENSION pg_graphwright`, which Postgres only allows a
+**superuser**, so the role that runs the migrations (`run_migrations` at startup, or whatever
+applies them) must be a superuser, or the extension must be pre-created. The application's
+own runtime role stays non-superuser and RLS-bound. The worker calls `graphwright.maintain()`
+each cycle to resolve the graph; grant that role `EXECUTE` on the maintenance functions (see
+the `pg_graphwright` README) when it is not the superuser.
+
 ## TLS is mandatory
 
 The server (`mnestic-server`, `--features serve`) speaks plain HTTP. Auth is a bearer token

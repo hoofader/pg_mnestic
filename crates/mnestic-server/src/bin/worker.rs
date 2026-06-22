@@ -41,6 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shutdown = Box::pin(shutdown_signal());
     loop {
         let processed = run_cycle(&engine, &store, lease_secs, batch).await;
+        // Resolve the knowledge graph off the write path. Index writes from both the sync and
+        // async ingest paths leave markers; maintain folds them into entities/edges. Cheap when
+        // nothing is dirty, so run it every cycle to keep the graph fresh; best-effort, since a
+        // transient failure here must not stall ingestion.
+        if let Err(e) = store.graphwright_maintain().await {
+            tracing::warn!(error = %e, "graphwright maintain failed");
+        }
         // Drain a backlog without sleeping; idle only when a full cycle found nothing.
         let nap = if processed > 0 { Duration::ZERO } else { poll };
         tokio::select! {

@@ -52,8 +52,12 @@ async fn image_carries_pg_graphwright() {
     // The mnestic schema still applies cleanly on this image.
     mnestic_store::run_migrations(&pool).await.expect("migrations run on the custom image");
 
-    // pg_graphwright is present and its index AM + resolve cycle work.
-    sqlx::query("CREATE EXTENSION pg_graphwright").execute(&pool).await.expect("create pg_graphwright");
+    // pg_graphwright is present and its index AM + resolve cycle work. Migration 0007 already
+    // created the extension, so this is idempotent.
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_graphwright")
+        .execute(&pool)
+        .await
+        .expect("create pg_graphwright");
     sqlx::query("CREATE TABLE gw_notes (id int PRIMARY KEY, body text)")
         .execute(&pool)
         .await
