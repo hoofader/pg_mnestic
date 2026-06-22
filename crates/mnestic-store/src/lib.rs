@@ -372,6 +372,20 @@ pub struct RelEdge {
     pub outgoing: bool,
 }
 
+/// One memory related to a queried memory because they share a graph entity. `shared` is
+/// how many of the queried memory's entities this one also mentions, so the caller can rank
+/// stronger overlaps first. The remaining fields mirror `LineageRow` so the server maps it to
+/// the same context-node shape as the lineage and edge lanes.
+#[derive(Debug, Clone)]
+pub struct RelatedRow {
+    pub memory_id: Uuid,
+    pub content: Option<String>,
+    pub version: i32,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+    pub shared: i64,
+}
+
 /// The new row produced by a versioned update, with the lineage fields the SDK's
 /// `updateMemory` response carries: `parent_memory_id` is the row this one supersedes,
 /// `root_memory_id` the first version in the chain.
@@ -1563,6 +1577,96 @@ impl Store {
             .collect())
     }
 
+    /// Other memories that share a graph entity with `memory_id`, ranked by how many
+    /// entities they share (desc), then id for a stable tie-break, capped at `limit`. The
+    /// tenant GUC scopes the graph (RLS on `mention`/`entity` delegates to `mnestic_memory`),
+    /// and the explicit `actor_id` filter blocks cross-actor leakage within a tenant. Only
+    /// latest-active, non-encrypted (content-bearing) memories are returned, since the related
+    /// view is for surfacing live, readable memories. `memory_id` is passed as text because the
+    /// graph keys provenance on the watch's `pk_column` (`id`) as text in `mention.source_pk`.
+    pub async fn related_memory_ids(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        memory_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<RelatedRow>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let rows = sqlx::query(
+            "WITH w AS ( \
+               SELECT id FROM graphwright.watch WHERE source_table = 'mnestic_memory'::regclass \
+             ), \
+             mine AS ( \
+               SELECT DISTINCT entity_id FROM graphwright.mention \
+               WHERE watch_id IN (SELECT id FROM w) AND source_pk = $1::text \
+             ) \
+             SELECT mem.id, mem.content, mem.version, \
+                    lower(mem.recorded_time) AS updated_at, mem.metadata, count(*) AS shared \
+             FROM graphwright.mention m \
+             JOIN mine ON mine.entity_id = m.entity_id \
+             JOIN mnestic_memory mem ON mem.id = m.source_pk::uuid \
+             WHERE m.watch_id IN (SELECT id FROM w) \
+               AND m.source_pk <> $1::text \
+               AND mem.actor_id = $2 AND mem.is_latest AND mem.status = 'active' \
+               AND mem.content IS NOT NULL \
+             GROUP BY mem.id, mem.content, mem.version, lower(mem.recorded_time), mem.metadata \
+             ORDER BY shared DESC, mem.id \
+             LIMIT $3",
+        )
+        .bind(memory_id.to_string())
+        .bind(actor_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RelatedRow {
+                memory_id: r.get("id"),
+                content: r.get("content"),
+                version: r.get("version"),
+                updated_at: r.get("updated_at"),
+                metadata: r
+                    .get::<Option<serde_json::Value>, _>("metadata")
+                    .unwrap_or_else(|| serde_json::json!({})),
+                shared: r.get("shared"),
+            })
+            .collect())
+    }
+
+    /// The top entity surfaces across an actor's live memories, with how many times each is
+    /// mentioned, for the memory-graph view. RLS scopes the graph to the tenant; the join to
+    /// `mnestic_memory` restricts it to this actor's latest-active memories, so one actor's
+    /// entities never bleed into another's within a tenant.
+    pub async fn actor_entities(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let rows = sqlx::query(
+            "WITH w AS ( \
+               SELECT id FROM graphwright.watch WHERE source_table = 'mnestic_memory'::regclass \
+             ) \
+             SELECT e.surface, count(*) AS mentions \
+             FROM graphwright.mention m \
+             JOIN graphwright.entity e ON e.id = m.entity_id \
+             JOIN mnestic_memory mem ON mem.id = m.source_pk::uuid \
+             WHERE m.watch_id IN (SELECT id FROM w) \
+               AND mem.actor_id = $1 AND mem.is_latest AND mem.status = 'active' \
+             GROUP BY e.surface \
+             ORDER BY mentions DESC, e.surface \
+             LIMIT $2",
+        )
+        .bind(actor_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows.into_iter().map(|r| (r.get("surface"), r.get("mentions"))).collect())
+    }
+
     /// An actor's documents (id, title) for the memory-graph view, newest first.
     pub async fn list_documents(
         &self,
@@ -1870,6 +1974,10 @@ mod tests {
         (
             7,
             "02a95ecc0d93d0fba44f020bed4d2a2a36cf034db223073c91575a27dad8d96381cb7b3fcb24cb5730f252fcb31de514",
+        ),
+        (
+            8,
+            "ea6a1a8cd606dc73b886affc3d103e0b734eb958b96430717fda8c524695c774fd698345f469cc196b7579eb2cf2874b",
         ),
     ];
 

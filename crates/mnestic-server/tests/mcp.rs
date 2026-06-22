@@ -169,11 +169,13 @@ async fn mcp_handshake_and_tools() {
     assert!(text.contains("climbing"), "recall returns the memory, got {text}");
     assert!(text.contains("profile"), "includeProfile defaults true");
 
-    // memory-graph lists the actor's documents.
+    // memory-graph lists the actor's documents and the entities extracted across their memories.
     engine
         .ingest_document(tenant, "user:9", &[], Some("Notes"), None, "some reference document content", Some("d1"), &serde_json::json!({}))
         .await
         .unwrap();
+    // Resolve the watch so the saved memory's content yields entities (no worker runs in-test).
+    engine.store().graphwright_maintain().await.unwrap();
     let resp = app(state.clone())
         .oneshot(rpc(
             Some("sk-test"),
@@ -182,11 +184,20 @@ async fn mcp_handshake_and_tools() {
         .await
         .unwrap();
     let j = body_json(resp).await;
-    assert!(j["result"]["content"][0]["text"].as_str().unwrap().contains("document"), "summary text present");
+    let summary = j["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(summary.contains("document"), "summary text present");
+    assert!(summary.contains("entit"), "summary mentions entities, got {summary}");
     let sc = &j["result"]["structuredContent"];
     assert_eq!(sc["totalCount"], 1, "structuredContent totalCount");
     let titles: Vec<&str> = sc["documents"].as_array().unwrap().iter().filter_map(|d| d["title"].as_str()).collect();
     assert!(titles.contains(&"Notes"), "document title in structuredContent, got {titles:?}");
+    // The saved "the user loves climbing" memory resolves into at least one entity surface.
+    let entities = sc["entities"].as_array().expect("structuredContent.entities is an array");
+    assert!(!entities.is_empty(), "entities surfaced after maintain, got {entities:?}");
+    assert!(
+        entities.iter().all(|e| e["surface"].is_string() && e["mentions"].is_number()),
+        "each entity carries a surface and a mention count, got {entities:?}"
+    );
 
     // resources/list advertises the projects resource.
     let resp = app(state.clone())

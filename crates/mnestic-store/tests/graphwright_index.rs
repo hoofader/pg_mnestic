@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Migration 0007 builds the graphwright index over `mnestic_memory.content`, and the worker's
-//! `graphwright_maintain()` resolves memory content into the entity graph. This asserts the real
-//! schema path (not the ad-hoc table the image smoke uses): run the migrations, write memories,
-//! maintain, and see entities derived from their content.
+//! Migration 0008 registers a graphwright watch on `mnestic_memory(content)` keyed on the stable
+//! `id` (replacing 0007's ctid-keyed index), and the worker's `graphwright_maintain()` resolves
+//! memory content into the entity graph. This asserts the real schema path (not the ad-hoc table
+//! the image smoke uses): run the migrations, write memories, maintain, and see entities derived
+//! from their content.
 
 use std::time::Duration;
 
@@ -30,7 +31,7 @@ async fn connect(opts: PgConnectOptions) -> PgPool {
 }
 
 #[tokio::test]
-async fn migration_builds_graph_over_memory_content() {
+async fn migration_registers_watch_and_resolves_entities() {
     let container = GenericImage::new("mnestic-pg", "dev")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
@@ -51,15 +52,21 @@ async fn migration_builds_graph_over_memory_content() {
         .database("postgres");
     let pool = connect(opts).await;
 
-    // 0007 creates the extension and the graphwright index over mnestic_memory.content.
-    run_migrations(&pool).await.expect("migrations incl. 0007");
+    // 0008 drops the ctid index and registers a watch on mnestic_memory(content) keyed on `id`.
+    run_migrations(&pool).await.expect("migrations incl. 0008");
 
-    let idx: bool = sqlx::query("SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'mnestic_memory_kg')")
-        .fetch_one(&pool)
-        .await
-        .expect("index lookup")
-        .get(0);
-    assert!(idx, "migration 0007 created the mnestic_memory_kg index");
+    let watch_pk: Option<String> = sqlx::query_scalar(
+        "SELECT pk_column FROM graphwright.watch \
+         WHERE source_table = 'mnestic_memory'::regclass",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("watch lookup");
+    assert_eq!(
+        watch_pk.as_deref(),
+        Some("id"),
+        "migration 0008 registered a watch on mnestic_memory keyed on the stable id"
+    );
 
     let store = Store::new(pool.clone());
     let tenant: Uuid =

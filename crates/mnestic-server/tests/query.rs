@@ -571,6 +571,42 @@ async fn search_and_profile_endpoints() {
         "the incoming extends neighbor lands in children, got {children:?}"
     );
 
+    // aggregate related: two memories share a distinctive graph entity ("Zarathustra"), so after
+    // maintain resolves the watch each surfaces the other under context.related (relation
+    // "related"). The shared surface is a rare token so the built-in tokenizer's noise cannot
+    // pull in an unrelated memory. The test drives maintain itself, since no worker runs in-test.
+    engine
+        .add(tenant, "user:kg", &["org:5".to_string()], "Zarathustra wrote at dawn", "conversation", None)
+        .await
+        .unwrap();
+    engine
+        .add(tenant, "user:kg", &["org:5".to_string()], "Zarathustra climbed the mountain", "conversation", None)
+        .await
+        .unwrap();
+    engine.store().graphwright_maintain().await.unwrap();
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"Zarathustra dawn","containerTag":"org:5:user:kg","aggregate":true}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["memory"].as_str() == Some("Zarathustra wrote at dawn"))
+        .expect("the first kg memory present in aggregate search");
+    let related = hit["context"]["related"].as_array().unwrap();
+    assert!(
+        related.iter().any(|n| n["relation"].as_str() == Some("related")
+            && n["memory"].as_str() == Some("Zarathustra climbed the mountain")),
+        "the entity-sharing memory surfaces under context.related, got {related:?}"
+    );
+
     // aggregate: seed a memory, then edit it so there is a 2-version chain (v2 supersedes v1).
     // The edit (via the engine, the same path as PATCH /v4/memories) preserves the prior as
     // history, so the latest version's aggregate context carries the prior chain version.

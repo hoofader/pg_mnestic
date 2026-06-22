@@ -124,7 +124,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "memory-graph",
-            "description": "Summary of the actor's documents with their ids and titles.",
+            "description": "Summary of the actor's documents (ids and titles) and the entities extracted across their memories.",
             "inputSchema": { "type": "object", "properties": { "containerTag": { "type": "string" } } }
         }
     ]})
@@ -337,9 +337,13 @@ async fn who_am_i_tool(state: &AppState, tenant: Uuid) -> Result<String, String>
     Ok(json!({ "userId": user_id, "email": Value::Null, "name": Value::Null }).to_string())
 }
 
-/// Returns (summary text, structuredContent). Actor-wide on purpose: a memory-graph is
-/// the user's whole document set, so the container tags inside the containerTag are not
-/// used to filter it (unlike recall).
+/// Top entity surfaces shown in the memory-graph view. Bounded so a noisy graph does not flood
+/// the result; the strongest-mentioned entities are what a graph summary wants.
+const GRAPH_ENTITY_LIMIT: i64 = 50;
+
+/// Returns (summary text, structuredContent). Actor-wide on purpose: a memory-graph is the
+/// user's whole document set plus the entities extracted across their memories, so the container
+/// tags inside the containerTag are not used to filter it (unlike recall).
 async fn memory_graph_tool(state: &AppState, tenant: Uuid, args: &Value) -> Result<(String, Value), String> {
     let tag = tag_from_args(args)?;
     let Scope { actor_id, .. } = parse_container_tag(&tag);
@@ -348,9 +352,20 @@ async fn memory_graph_tool(state: &AppState, tenant: Uuid, args: &Value) -> Resu
         .iter()
         .map(|(id, title)| json!({ "id": id.to_string(), "title": title }))
         .collect();
+    let entity_rows = state
+        .engine
+        .store()
+        .actor_entities(tenant, &actor_id, GRAPH_ENTITY_LIMIT)
+        .await
+        .map_err(scrub)?;
+    let entities: Vec<Value> = entity_rows
+        .iter()
+        .map(|(surface, mentions)| json!({ "surface": surface, "mentions": mentions }))
+        .collect();
     let total = documents.len();
+    let ents = entities.len();
     Ok((
-        format!("{total} document(s)"),
-        json!({ "documents": documents, "totalCount": total }),
+        format!("{total} document(s), {ents} entit{}", if ents == 1 { "y" } else { "ies" }),
+        json!({ "documents": documents, "totalCount": total, "entities": entities }),
     ))
 }

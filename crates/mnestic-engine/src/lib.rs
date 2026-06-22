@@ -19,8 +19,21 @@ pub use error::{Error, Result};
 pub use mnestic_core::{Relation, RelationEdge};
 pub use mnestic_store::{
     ChunkHit, LineageRow, MemoryVersion, MetaFilter, MetaKind, MetaLeaf, MetaOp, Profile, RecallHit,
-    RelEdge, SourceRow,
+    RelEdge, RelatedRow, SourceRow,
 };
+
+/// The aggregate context for one memory, assembled across the supersession chain, the
+/// `extends`/`derives` relation edges, the knowledge-graph entity overlap, and the source it
+/// was extracted from. Bundled into one struct so the server reads all four lanes from a single
+/// engine call. `lineage` and `edges` carry the supersession versions and relation neighbors;
+/// `related` carries other memories that share a graph entity; `source` is the provenance row.
+#[derive(Debug, Default, Clone)]
+pub struct MemoryContext {
+    pub lineage: Vec<LineageRow>,
+    pub edges: Vec<RelEdge>,
+    pub related: Vec<RelatedRow>,
+    pub source: Option<SourceRow>,
+}
 
 /// An actor's durable profile plus the memories most relevant to a query. Backs the
 /// supermemory `/v4/profile` shape (profile, optionally with query-scoped results).
@@ -77,6 +90,10 @@ const DYNAMIC_CTX_CAP: i64 = 20;
 /// reranker reorders this pool and the top `limit` are returned. RECALL_SQL also
 /// clamps each signal's fan-out to at least 50, so the two agree for `limit <= 50`.
 const RERANK_POOL: i64 = 50;
+
+/// How many graph-entity-sharing neighbors the aggregate context surfaces per memory. Small,
+/// since this is a context sidebar (the strongest overlaps), not a recall result set.
+const RELATED_LIMIT: i64 = 10;
 
 /// Document chunking defaults: window size and overlap in characters. ~1000 chars is
 /// a few sentences, enough context per chunk for retrieval; the overlap keeps a
@@ -241,19 +258,22 @@ impl Engine {
     }
 
     /// The aggregate context for one memory: its supersession chain (other versions), its
-    /// `extends`/`derives` relation edges, and the source it was extracted from. Keeps the
-    /// server -> engine -> store layering so the read handlers do not reach the store
-    /// directly. Every read is tenant- and actor-scoped in the store.
+    /// `extends`/`derives` relation edges, the memories that share a knowledge-graph entity
+    /// with it, and the source it was extracted from. Keeps the server -> engine -> store
+    /// layering so the read handlers do not reach the store directly. Every read is tenant- and
+    /// actor-scoped in the store.
     pub async fn memory_context(
         &self,
         tenant_id: Uuid,
         actor_id: &str,
         memory_id: Uuid,
-    ) -> Result<(Vec<LineageRow>, Vec<RelEdge>, Option<SourceRow>)> {
-        let chain = self.store.version_chain(tenant_id, actor_id, memory_id).await?;
+    ) -> Result<MemoryContext> {
+        let lineage = self.store.version_chain(tenant_id, actor_id, memory_id).await?;
         let edges = self.store.relation_edges_for(tenant_id, actor_id, memory_id).await?;
+        let related =
+            self.store.related_memory_ids(tenant_id, actor_id, memory_id, RELATED_LIMIT).await?;
         let source = self.store.source_for_memory(tenant_id, actor_id, memory_id).await?;
-        Ok((chain, edges, source))
+        Ok(MemoryContext { lineage, edges, related, source })
     }
 
     /// Ingest raw text: extract candidate memories, embed them, then resolve and

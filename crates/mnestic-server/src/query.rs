@@ -9,7 +9,7 @@ use std::time::Instant;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
-use mnestic_engine::{ChunkHit, LineageRow, RecallHit, RelEdge, SourceRow};
+use mnestic_engine::{ChunkHit, LineageRow, RecallHit, RelEdge, RelatedRow, SourceRow};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -68,7 +68,8 @@ pub struct ContextNode {
 
 /// The aggregate `context` for a memory. `parents` holds the chain versions earlier than
 /// this one plus the neighbors it extends/derives FROM; `children` holds the later chain
-/// versions plus the neighbors that extend/derive FROM it. `related` stays empty.
+/// versions plus the neighbors that extend/derive FROM it. `related` holds memories that share
+/// a knowledge-graph entity with it (an undirected association, not a lineage or edge).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryContext {
@@ -140,6 +141,19 @@ fn edge_to_context_node(e: RelEdge) -> ContextNode {
         updated_at: e.neighbor_updated_at.map(|t| t.to_rfc3339()),
         metadata: e.neighbor_metadata,
         version: e.neighbor_version,
+    }
+}
+
+/// Map a graph-entity-sharing neighbor to a context node. The relation is `"related"`: the two
+/// memories mention a common entity, which is an association, not a supersession or a directed
+/// `extends`/`derives` edge.
+fn related_to_context_node(r: RelatedRow) -> ContextNode {
+    ContextNode {
+        memory: r.content,
+        relation: "related".to_string(),
+        updated_at: r.updated_at.map(|t| t.to_rfc3339()),
+        metadata: r.metadata,
+        version: r.version,
     }
 }
 
@@ -327,14 +341,13 @@ pub async fn search(
                 continue;
             }
             let Ok(memory_id) = Uuid::parse_str(&r.id) else { continue };
-            let (chain, edges, source) =
-                state.engine.memory_context(tenant, &actor_id, memory_id).await?;
+            let ctx = state.engine.memory_context(tenant, &actor_id, memory_id).await?;
             let (chain_parents, chain_children): (Vec<LineageRow>, Vec<LineageRow>) =
-                chain.into_iter().partition(|l| l.is_parent);
+                ctx.lineage.into_iter().partition(|l| l.is_parent);
             // An outgoing edge means the memory extends/derives FROM the neighbor, so the
             // neighbor is a parent; an incoming edge makes the neighbor a child.
             let (out_edges, in_edges): (Vec<RelEdge>, Vec<RelEdge>) =
-                edges.into_iter().partition(|e| e.outgoing);
+                ctx.edges.into_iter().partition(|e| e.outgoing);
             let parents: Vec<ContextNode> = chain_parents
                 .into_iter()
                 .map(to_context_node)
@@ -345,12 +358,10 @@ pub async fn search(
                 .map(to_context_node)
                 .chain(in_edges.into_iter().map(edge_to_context_node))
                 .collect();
-            r.context = Some(MemoryContext {
-                parents,
-                children,
-                related: Vec::new(),
-            });
-            r.documents = Some(source.into_iter().map(to_document_ref).collect());
+            let related: Vec<ContextNode> =
+                ctx.related.into_iter().map(related_to_context_node).collect();
+            r.context = Some(MemoryContext { parents, children, related });
+            r.documents = Some(ctx.source.into_iter().map(to_document_ref).collect());
             r.is_aggregated = Some(true);
         }
     }
