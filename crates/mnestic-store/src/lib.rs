@@ -1979,6 +1979,10 @@ mod tests {
             8,
             "ea6a1a8cd606dc73b886affc3d103e0b734eb958b96430717fda8c524695c774fd698345f469cc196b7579eb2cf2874b",
         ),
+        (
+            9,
+            "dd77ad9b06af578820e2a93d952a13d338f099de4bc6d27ec038ef29b83f080cf86eb202ab9eb46aa4aae1b03938cff5",
+        ),
     ];
 
     #[test]

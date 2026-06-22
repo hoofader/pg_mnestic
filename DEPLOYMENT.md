@@ -15,6 +15,32 @@ own runtime role stays non-superuser and RLS-bound. The worker calls `graphwrigh
 each cycle to resolve the graph; grant that role `EXECUTE` on the maintenance functions (see
 the `pg_graphwright` README) when it is not the superuser.
 
+## Knowledge graph extractor (GLiNER, optional)
+
+The graph resolves entities from memory content. By default it uses `pg_graphwright`'s built-in
+tokenizer, which is coarse (common words become entities). For real named-entity extraction, run
+the GLiNER sidecar (`services/onnx-extractor`, a small Node service wrapping `graphwright-onnx`)
+and point the extractor seam at it. It is opt-in: without it, the graph keeps resolving with the
+built-in tokenizer.
+
+```bash
+docker build -t mnestic-onnx services/onnx-extractor
+docker run -d --name onnx -p 8081:8081 mnestic-onnx   # fetches the GLiNER model on first start
+```
+
+Then, as a superuser, activate it for the database (migration `0009` already installed the
+`mnestic_gliner_extract` function and the `http` extension it uses):
+
+```sql
+ALTER DATABASE mnestic SET mnestic.gliner_url   = 'http://onnx:8081/extract';
+ALTER DATABASE mnestic SET graphwright.extractor = 'mnestic_gliner_extract';
+```
+
+The next `graphwright.maintain()` (the worker, each cycle) re-resolves through GLiNER. The sidecar
+keeps memory text on your own infrastructure (no third-party call). The extractor runs in the
+maintenance pass, off the write path, so a slow model never blocks a write. To revert, `RESET`
+`graphwright.extractor` and the graph falls back to the built-in tokenizer.
+
 ## TLS is mandatory
 
 The server (`mnestic-server`, `--features serve`) speaks plain HTTP. Auth is a bearer token

@@ -11,12 +11,14 @@ FROM pgvector/pgvector:pg16 AS build
 
 ARG PG_GRAPHWRIGHT_REF=88e1844cdfa482080d2377e7bde4124cf0718c80
 ARG CARGO_PGRX_VERSION=0.18.0
+ARG PGSQL_HTTP_REF=v1.7.1
 
 # clang/libclang are pgrx's bindgen requirement; postgresql-server-dev-16 supplies the headers
-# and pg_config the extension is built against (the base image's own PG16).
+# and pg_config the extension is built against (the base image's own PG16). libcurl is the
+# pgsql-http build/runtime dependency.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential clang libclang-dev pkg-config git curl ca-certificates \
-      postgresql-server-dev-16 \
+      postgresql-server-dev-16 libcurl4-openssl-dev \
   && rm -rf /var/lib/apt/lists/*
 
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -37,10 +39,24 @@ RUN git clone https://github.com/hoofader/pg_graphwright /tmp/pgw \
   && cd /tmp/pgw \
   && cargo pgrx install --release --no-default-features --features pg16 --pg-config /usr/bin/pg_config
 
+# pgsql-http: the in-database HTTP client the entity-extractor seam uses to reach the GLiNER
+# sidecar. A plain PGXS C build, no pgrx.
+RUN git clone https://github.com/pramsey/pgsql-http /tmp/http \
+  && git -C /tmp/http checkout ${PGSQL_HTTP_REF} \
+  && make -C /tmp/http USE_PGXS=1 PG_CONFIG=/usr/bin/pg_config \
+  && make -C /tmp/http USE_PGXS=1 PG_CONFIG=/usr/bin/pg_config install
+
 # Final image: the clean pgvector base plus only the built extension artifacts (the shared
-# object and its control/SQL), so none of the Rust build toolchain ships.
+# objects and their control/SQL), so none of the build toolchain ships. libcurl4 is the
+# pgsql-http runtime dependency.
 FROM pgvector/pgvector:pg16
+
+RUN apt-get update && apt-get install -y --no-install-recommends libcurl4 \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /usr/lib/postgresql/16/lib/pg_graphwright.so /usr/lib/postgresql/16/lib/
 COPY --from=build /usr/share/postgresql/16/extension/pg_graphwright.control /usr/share/postgresql/16/extension/
 COPY --from=build /usr/share/postgresql/16/extension/pg_graphwright--*.sql /usr/share/postgresql/16/extension/
+COPY --from=build /usr/lib/postgresql/16/lib/http.so /usr/lib/postgresql/16/lib/
+COPY --from=build /usr/share/postgresql/16/extension/http.control /usr/share/postgresql/16/extension/
+COPY --from=build /usr/share/postgresql/16/extension/http--*.sql /usr/share/postgresql/16/extension/

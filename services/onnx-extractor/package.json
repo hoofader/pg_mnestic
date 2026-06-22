@@ -1,0 +1,14 @@
+{
+  "name": "mnestic-onnx-extractor",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "description": "HTTP wrapper around graphwright-onnx's GLiNER extractor, the entity extractor for pg_graphwright's seam.",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@lmoe/gliner-onnx": "^0.1.0",
+    "graphwright": "git+https://github.com/hoofader/graphwright.git#899cbb1bf61b995a7c1ec8f1ebdfaf43b4276eea",
+    "graphwright-onnx": "git+https://github.com/hoofader/graphwright-onnx.git#7a0928628c290b87dc4c3b1f72ffe74d6053141c"
+  }
+}
