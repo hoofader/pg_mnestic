@@ -37,7 +37,7 @@ async fn connect(opts: PgConnectOptions) -> PgPool {
 
 #[tokio::test]
 async fn harness_ingests_recalls_answers_and_scores() {
-    let container = GenericImage::new("pgvector/pgvector", "pg16")
+    let container = GenericImage::new("mnestic-pg", "dev")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
             "database system is ready to accept connections",

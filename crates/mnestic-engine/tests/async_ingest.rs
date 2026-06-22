@@ -84,7 +84,7 @@ impl Extractor for FailFirst {
 /// Start pgvector, migrate, create a non-BYPASSRLS app role and a tenant. Returns the
 /// container (kept alive by the caller), the app-role pool, and the tenant id.
 async fn setup() -> (testcontainers::ContainerAsync<GenericImage>, PgPool, Uuid) {
-    let container = GenericImage::new("pgvector/pgvector", "pg16")
+    let container = GenericImage::new("mnestic-pg", "dev")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
             "database system is ready to accept connections",

@@ -1,5 +1,13 @@
 # Deployment
 
+## Postgres image
+
+The database must carry `vector`, `pgcrypto`, `btree_gist`, and `pg_graphwright`. The first
+three are in `pgvector/pgvector:pg16`; `pg_graphwright` (the knowledge-graph extension) is not
+in any public registry, so run the image built by `docker/pg/Dockerfile` (pgvector plus
+`pg_graphwright` from source) or an equivalent. See `docker/pg/README.md`. The integration
+tests and CI use this same image, so the test database matches production.
+
 ## TLS is mandatory
 
 The server (`mnestic-server`, `--features serve`) speaks plain HTTP. Auth is a bearer token

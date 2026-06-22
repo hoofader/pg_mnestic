@@ -76,7 +76,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn memory_tool_save_then_forget_by_content() {
-    let container = GenericImage::new("pgvector/pgvector", "pg16")
+    let container = GenericImage::new("mnestic-pg", "dev")
         .with_exposed_port(5432.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
             "database system is ready to accept connections",

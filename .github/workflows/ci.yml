@@ -33,13 +33,24 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
-      # The integration tests start a throwaway pgvector container via testcontainers, so this
-      # job depends on the ubuntu runner's preinstalled, running Docker daemon. The live
-      # provider tests are #[ignore], so no API keys are needed.
+      - uses: docker/setup-buildx-action@v3
+      # The integration tests run against a custom Postgres image (pgvector + pg_graphwright,
+      # built from source via pgrx). Build it and load it into the runner's Docker daemon as
+      # `mnestic-pg:dev` so testcontainers finds it locally. The pgrx compile is cached across
+      # runs via the GHA build cache, so only a Dockerfile/ref change pays the full build.
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/pg
+          file: docker/pg/Dockerfile
+          tags: mnestic-pg:dev
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The live provider tests are #[ignore], so no API keys are needed.
       # --all-features so feature-gated tests (e.g. the `rerank` TEI client) actually run.
       - run: cargo test --workspace --all-features
