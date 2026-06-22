@@ -9,16 +9,17 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use mnestic_core::{
     decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, QueryRewriter,
-    Reranker, ResolveAction, Scored,
+    RelationClassifier, Reranker, ResolveAction, Scored,
 };
 use mnestic_store::{NewChunk, NewMemoryFull, PendingSource, Store};
 use uuid::Uuid;
 
 mod error;
 pub use error::{Error, Result};
+pub use mnestic_core::{Relation, RelationEdge};
 pub use mnestic_store::{
     ChunkHit, LineageRow, MemoryVersion, MetaFilter, MetaKind, MetaLeaf, MetaOp, Profile, RecallHit,
-    SourceRow,
+    RelEdge, SourceRow,
 };
 
 /// An actor's durable profile plus the memories most relevant to a query. Backs the
@@ -90,6 +91,7 @@ pub struct Engine {
     ontology: Ontology,
     reranker: Option<Arc<dyn Reranker>>,
     rewriter: Option<Arc<dyn QueryRewriter>>,
+    classifier: Option<Arc<dyn RelationClassifier>>,
 }
 
 impl Engine {
@@ -101,6 +103,7 @@ impl Engine {
             ontology: Ontology::starter(),
             reranker: None,
             rewriter: None,
+            classifier: None,
         }
     }
 
@@ -124,6 +127,16 @@ impl Engine {
     /// repairs the precision loss.
     pub fn with_rewriter(mut self, rewriter: Arc<dyn QueryRewriter>) -> Self {
         self.rewriter = Some(rewriter);
+        self
+    }
+
+    /// Add a relation classifier. After a synchronous write (`add`/`add_at`) commits, the
+    /// engine asks it which same-subject memories the new ones extend/derive from, and
+    /// persists those edges. The pass is post-commit and best-effort, so the model call never
+    /// holds the write transaction open and a classifier error never fails the write. The
+    /// async (`dreaming: dynamic`) worker path does not classify yet.
+    pub fn with_classifier(mut self, classifier: Arc<dyn RelationClassifier>) -> Self {
+        self.classifier = Some(classifier);
         self
     }
 
@@ -227,19 +240,20 @@ impl Engine {
         Ok(hits)
     }
 
-    /// The aggregate context for one memory: its supersession chain (other versions) and
-    /// the source it was extracted from. Keeps the server -> engine -> store layering so the
-    /// read handlers do not reach the store directly. Both reads are tenant- and
-    /// actor-scoped in the store.
+    /// The aggregate context for one memory: its supersession chain (other versions), its
+    /// `extends`/`derives` relation edges, and the source it was extracted from. Keeps the
+    /// server -> engine -> store layering so the read handlers do not reach the store
+    /// directly. Every read is tenant- and actor-scoped in the store.
     pub async fn memory_context(
         &self,
         tenant_id: Uuid,
         actor_id: &str,
         memory_id: Uuid,
-    ) -> Result<(Vec<LineageRow>, Option<SourceRow>)> {
+    ) -> Result<(Vec<LineageRow>, Vec<RelEdge>, Option<SourceRow>)> {
         let chain = self.store.version_chain(tenant_id, actor_id, memory_id).await?;
+        let edges = self.store.relation_edges_for(tenant_id, actor_id, memory_id).await?;
         let source = self.store.source_for_memory(tenant_id, actor_id, memory_id).await?;
-        Ok((chain, source))
+        Ok((chain, edges, source))
     }
 
     /// Ingest raw text: extract candidate memories, embed them, then resolve and
@@ -305,12 +319,88 @@ impl Engine {
 
         for attempt in 0..MAX_CONFLICT_RETRIES {
             match self.persist(&req).await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    // Relation classification runs only after the write has committed
+                    // (the persist loop already committed), so the LLM call never holds a
+                    // DB transaction open. Skip it on an idempotent repeat, where no new
+                    // memory was written. It is best-effort: a failure is logged and does
+                    // not fail the write, since the memories are already durable and the
+                    // edges are enrichment.
+                    if !result.idempotent_skip {
+                        if let Err(e) =
+                            self.classify_relations(tenant_id, actor_id, &result.inserted).await
+                        {
+                            tracing::warn!(
+                                target: "mnestic::relations",
+                                error = %e,
+                                "relation classification failed; memories committed without edges"
+                            );
+                        }
+                    }
+                    return Ok(result);
+                }
                 Err(e) if e.is_transient_conflict() && attempt + 1 < MAX_CONFLICT_RETRIES => continue,
                 Err(e) => return Err(e),
             }
         }
         Err(Error::ConflictRetriesExhausted(MAX_CONFLICT_RETRIES))
+    }
+
+    /// Ask the classifier which same-subject memories each newly written memory
+    /// extends/derives from, and persist those edges. No-op when no classifier is
+    /// configured or nothing was inserted. The LLM call is made outside any DB
+    /// transaction; a short tenant tx opens only to write the resulting edges. Called
+    /// post-commit and wrapped best-effort at the `add_at` call site.
+    async fn classify_relations(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        ids: &[Uuid],
+    ) -> Result<()> {
+        let Some(classifier) = &self.classifier else {
+            return Ok(());
+        };
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for &id in ids {
+            let Some((content, subject)) =
+                self.store.memory_brief(tenant_id, actor_id, id).await?
+            else {
+                continue;
+            };
+            // No subject means no entity key to group on, so there are no neighbors.
+            if subject.is_none() {
+                continue;
+            }
+            let neighbors = self.store.same_subject_neighbors(tenant_id, actor_id, id, 10).await?;
+            if neighbors.is_empty() {
+                continue;
+            }
+            let neighbor_contents: Vec<String> =
+                neighbors.iter().map(|(_, c)| c.clone()).collect();
+            let edges = classifier.classify(&content, &neighbor_contents).await?;
+            if edges.is_empty() {
+                continue;
+            }
+            let mut tx = self.store.begin_tenant(tenant_id).await?;
+            for edge in edges {
+                let Some((to_id, _)) = neighbors.get(edge.index) else {
+                    continue;
+                };
+                Store::insert_relation_tx(
+                    &mut tx,
+                    tenant_id,
+                    actor_id,
+                    id,
+                    *to_id,
+                    edge.relation.as_str(),
+                )
+                .await?;
+            }
+            tx.commit().await?;
+        }
+        Ok(())
     }
 
     /// One atomic attempt at the write: insert the source, then resolve and persist

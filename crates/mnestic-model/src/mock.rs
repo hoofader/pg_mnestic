@@ -5,7 +5,8 @@
 
 use async_trait::async_trait;
 use mnestic_core::{
-    Candidate, Ctx, Embedder, Extractor, MemType, QueryRewriter, Reranker, Result, Scored, Temporal,
+    Candidate, Ctx, Embedder, Extractor, MemType, QueryRewriter, Relation, RelationClassifier,
+    RelationEdge, Reranker, Result, Scored, Temporal,
 };
 
 pub const MOCK_DIM: usize = 1536;
@@ -85,6 +86,21 @@ pub struct MockRewriter;
 impl QueryRewriter for MockRewriter {
     async fn rewrite(&self, query: &str) -> Result<String> {
         Ok(query.to_string())
+    }
+}
+
+/// Deterministic relation classifier for tests: marks the first candidate as an
+/// `extends` of the new memory, so the engine's relation pass has a stable edge to
+/// persist without a live model.
+pub struct MockRelationClassifier;
+
+#[async_trait]
+impl RelationClassifier for MockRelationClassifier {
+    async fn classify(&self, _memory: &str, candidates: &[String]) -> Result<Vec<RelationEdge>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![RelationEdge { index: 0, relation: Relation::Extends }])
     }
 }
 

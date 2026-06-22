@@ -149,6 +149,8 @@ Every SDK method that targets the memory core is served and asserted by an integ
 | `searchMode` / `threshold` (`/v4/search`) | n/a | Done. `memories`/`documents`/`hybrid`; `threshold` is a relative cutoff (our score is fused RRF, not a 0-1 cosine). |
 | `include.forgottenMemories` (`/v4/search`) | n/a | Done. Surfaces tombstoned memories via a visibility gate in the recall SQL. |
 | `taskType` (`/v3/documents`) | n/a | Done. `memory` (default) extracts so the save is recallable via `/v4/search`; `superrag` keeps the chunk path. |
+| `rerank` (`/v4/search`) | n/a | Done. A self-hosted TEI reranker (`MNESTIC_RERANK_URL`) reorders the candidate pool; `rerank: false` opts out per request. |
+| `aggregate` (`/v4/search`) | n/a | Done. `context` parents/children carry `updates` (supersession chain) plus LLM-classified `extends`/`derives` edges; `documents` from the source. |
 
 Out of scope, by design (the SaaS platform surface, not the self-hosted memory engine):
 
@@ -159,8 +161,8 @@ Out of scope, by design (the SaaS platform surface, not the self-hosted memory e
 
 Known limitations and remaining work:
 
-- `rerank` (`/v4/search`) is accepted and ignored: it needs a reranker provider wired into the server. The engine already has a `Reranker` trait and recall reranks when one is set, but no provider is configured by default, and picking one (model and vendor) is a deployment decision. Wire a provider and gate it on the flag to honor it.
-- `aggregate` (`/v4/search`) is accepted and ignored: it needs a memory relation graph (the SDK's per-result `context` of parents/children/related with `updates`/`extends`/`derives` relations). Mnestic models a linear supersession chain, not a relation graph, so there is no data to aggregate yet.
+- `aggregate`'s `extends`/`derives` edges are classified on the synchronous write path only; a memory ingested via `dreaming: dynamic` (the worker) gets no relation edges yet, the same gap as async metadata. The `context.related` array is currently always empty: `extends`/`derives` land in `parents`/`children` by edge direction, and a separate same-entity "related" lane is not surfaced. Relations are detected only within an entity (shared `subject`), and only the reranker-free supersession `updates` are exact without a classifier configured.
+- A self-hosted entity knowledge graph (`pg_graphwright`) is a planned, separate layer (richer entity-based `related`, beyond the SDK's lineage `context`); it needs a custom Postgres image carrying the extension.
 - `entityContext` (`/v3/documents`) is accepted and ignored (no per-container extraction guidance yet). `taskType: memory` extraction is synchronous; there is no `dreaming: dynamic` async option on `/v3/documents` (it exists on `/v4/memories`).
 - `threshold` is a cutoff relative to the strongest hit for the query, not supermemory's absolute score, because our `similarity` is a fused RRF value, not a 0-1 cosine.
 - One narrow filter divergence remains: a `metadata`-equality leaf compares the stored JSON text, so a number with trailing zeros (`1.50`) does not equal the string `"1.5"`. Pathological (JSON-number metadata filtered by a string value); documented rather than special-cased.

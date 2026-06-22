@@ -5,10 +5,16 @@
 
 pub mod mock;
 
-pub use mock::{MockEmbedder, MockExtractor, MockReranker, MockRewriter};
+pub use mock::{MockEmbedder, MockExtractor, MockRelationClassifier, MockReranker, MockRewriter};
 
 #[cfg(any(feature = "openai", feature = "anthropic"))]
 mod extract_schema;
+
+#[cfg(feature = "anthropic")]
+mod classify;
+
+#[cfg(feature = "anthropic")]
+pub use classify::AnthropicRelationClassifier;
 
 #[cfg(feature = "openai")]
 pub mod openai;

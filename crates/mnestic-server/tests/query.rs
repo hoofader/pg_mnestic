@@ -491,6 +491,86 @@ async fn search_and_profile_endpoints() {
         "profile filter keeps only infra memories, got {teams:?}"
     );
 
+    // aggregate relations: seed two same-subject memories and wire an `extends` edge between
+    // them via the store (no live classifier in the test), then assert the aggregate context
+    // surfaces it. The outgoing endpoint carries the neighbor as a parent.
+    engine
+        .add(tenant, "user:rel", &["org:2".to_string()], "user adopted a dog", "conversation", None)
+        .await
+        .unwrap();
+    engine
+        .add(tenant, "user:rel", &["org:2".to_string()], "user has a pet animal", "conversation", None)
+        .await
+        .unwrap();
+    let dog_id = engine
+        .recall(tenant, "user:rel", "dog", 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|h| h.content.as_deref() == Some("user adopted a dog"))
+        .expect("dog memory present")
+        .id;
+    let pet_id = engine
+        .recall(tenant, "user:rel", "pet", 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|h| h.content.as_deref() == Some("user has a pet animal"))
+        .expect("pet memory present")
+        .id;
+    {
+        let mut tx = engine.store().begin_tenant(tenant).await.unwrap();
+        Store::insert_relation_tx(&mut tx, tenant, "user:rel", dog_id, pet_id, "extends")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    // The `from` memory (dog) extends FROM the `to` memory (pet), so pet lands in parents.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"dog","containerTag":"org:2:user:rel","aggregate":true}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"].as_str() == Some(dog_id.to_string().as_str()))
+        .expect("the extending memory present in aggregate search");
+    let parents = hit["context"]["parents"].as_array().unwrap();
+    assert!(
+        parents.iter().any(|n| n["relation"].as_str() == Some("extends")
+            && n["memory"].as_str() == Some("user has a pet animal")),
+        "the extends neighbor lands in parents, got {parents:?}"
+    );
+    // The `to` memory (pet) sees the same edge as incoming, so the dog lands in its children.
+    let resp = app(state.clone())
+        .oneshot(post(
+            "/v4/search",
+            "sk-test",
+            r#"{"q":"pet","containerTag":"org:2:user:rel","aggregate":true}"#,
+        ))
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    let hit = j["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"].as_str() == Some(pet_id.to_string().as_str()))
+        .expect("the extended memory present in aggregate search");
+    let children = hit["context"]["children"].as_array().unwrap();
+    assert!(
+        children.iter().any(|n| n["relation"].as_str() == Some("extends")
+            && n["memory"].as_str() == Some("user adopted a dog")),
+        "the incoming extends neighbor lands in children, got {children:?}"
+    );
+
     // aggregate: seed a memory, then edit it so there is a 2-version chain (v2 supersedes v1).
     // The edit (via the engine, the same path as PATCH /v4/memories) preserves the prior as
     // history, so the latest version's aggregate context carries the prior chain version.

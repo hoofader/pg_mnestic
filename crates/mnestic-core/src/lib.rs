@@ -15,7 +15,7 @@ pub use chunk::chunk_text;
 pub use error::{Error, Result};
 pub use ontology::{normalize_key, Ontology};
 pub use resolve::decide;
-pub use traits::{Ctx, Embedder, Extractor, QueryRewriter, Reranker};
+pub use traits::{Ctx, Embedder, Extractor, QueryRewriter, RelationClassifier, Reranker};
 pub use types::{
-    Candidate, ExistingMatch, MemType, ResolveAction, Scored, Temporal,
+    Candidate, ExistingMatch, MemType, Relation, RelationEdge, ResolveAction, Scored, Temporal,
 };

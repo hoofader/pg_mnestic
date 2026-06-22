@@ -90,3 +90,31 @@ pub struct Scored {
     pub content: String,
     pub score: f32,
 }
+
+/// A graph relation between two memories beyond the supersession chain (which the SDK
+/// names `updates`). `Extends` is a memory that adds detail to another; `Derives` is a
+/// memory inferred from another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Relation {
+    Extends,
+    Derives,
+}
+
+impl Relation {
+    /// The wire/SQL token. The `relation` column's CHECK and the SDK both use these.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Relation::Extends => "extends",
+            Relation::Derives => "derives",
+        }
+    }
+}
+
+/// One relation the classifier found, pointing at a candidate by its position in the
+/// slice the classifier was given, so the caller maps it back to a memory id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelationEdge {
+    pub index: usize,
+    pub relation: Relation,
+}

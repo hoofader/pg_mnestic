@@ -357,6 +357,21 @@ pub struct SourceRow {
     pub metadata: serde_json::Value,
 }
 
+/// One `extends`/`derives` graph edge from a memory's perspective, joined to the OTHER
+/// memory row. `outgoing` is true when the queried memory is the `from_id` (it
+/// extends/derives FROM the neighbor); false when it is the `to_id` (the neighbor
+/// extends/derives FROM it). The neighbor fields mirror `LineageRow` so the server maps
+/// both lanes to the same context node shape.
+#[derive(Debug, Clone)]
+pub struct RelEdge {
+    pub neighbor_content: Option<String>,
+    pub neighbor_version: i32,
+    pub neighbor_updated_at: Option<DateTime<Utc>>,
+    pub neighbor_metadata: serde_json::Value,
+    pub relation: String,
+    pub outgoing: bool,
+}
+
 /// The new row produced by a versioned update, with the lineage fields the SDK's
 /// `updateMemory` response carries: `parent_memory_id` is the row this one supersedes,
 /// `root_memory_id` the first version in the chain.
@@ -955,6 +970,16 @@ impl Store {
         .bind(reason)
         .fetch_all(&mut **tx)
         .await?;
+        // Forgotten memories leave no dangling relation edges: drop every edge touching
+        // a tombstoned row in either direction.
+        sqlx::query(
+            "DELETE FROM mnestic_memory_relation \
+             WHERE tenant_id = $1 AND (from_id = ANY($2) OR to_id = ANY($2))",
+        )
+        .bind(tenant_id)
+        .bind(&ids)
+        .execute(&mut **tx)
+        .await?;
         Ok(ids)
     }
 
@@ -982,6 +1007,15 @@ impl Store {
         .bind(actor_id)
         .bind(id)
         .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+        // A forgotten memory leaves no dangling relation edges: drop both directions.
+        sqlx::query(
+            "DELETE FROM mnestic_memory_relation \
+             WHERE tenant_id = $1 AND (from_id = $2 OR to_id = $2)",
+        )
+        .bind(tenant_id)
+        .bind(id)
         .execute(&mut **tx)
         .await?;
         Ok(done.rows_affected())
@@ -1375,6 +1409,151 @@ impl Store {
         }))
     }
 
+    /// Persist one `extends`/`derives` edge on the caller's tx. ON CONFLICT keeps the
+    /// classifier idempotent across re-runs of the same memory. A self-edge is skipped:
+    /// a memory does not relate to itself, and the row would be noise.
+    pub async fn insert_relation_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: Uuid,
+        actor_id: &str,
+        from_id: Uuid,
+        to_id: Uuid,
+        relation: &str,
+    ) -> Result<()> {
+        if from_id == to_id {
+            return Ok(());
+        }
+        sqlx::query(
+            "INSERT INTO mnestic_memory_relation \
+               (tenant_id, actor_id, from_id, to_id, relation) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (tenant_id, from_id, to_id, relation) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(from_id)
+        .bind(to_id)
+        .bind(relation)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// The content and subject of a latest-active memory, for the relation classifier.
+    /// Returns None when the memory is not a latest-active row under (tenant, actor), or
+    /// when its content is encrypted at rest (NULL `content`), since the classifier reads
+    /// cleartext and cannot work from ciphertext.
+    pub async fn memory_brief(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        id: Uuid,
+    ) -> Result<Option<(String, Option<String>)>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let row = sqlx::query(
+            "SELECT content, subject FROM mnestic_memory \
+             WHERE tenant_id = $1 AND actor_id = $2 AND id = $3 \
+               AND is_latest AND status = 'active'",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.and_then(|r| {
+            let content: Option<String> = r.get("content");
+            let subject: Option<String> = r.get("subject");
+            content.map(|c| (c, subject))
+        }))
+    }
+
+    /// Latest-active memories for this actor sharing `memory_id`'s subject, excluding
+    /// `memory_id` itself and any encrypted (NULL-content) rows, newest first, capped at
+    /// `limit`. Returns empty when the memory has no subject (no entity key to group on).
+    pub async fn same_subject_neighbors(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        memory_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<(Uuid, String)>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let subject: Option<String> = sqlx::query_scalar(
+            "SELECT subject FROM mnestic_memory \
+             WHERE tenant_id = $1 AND actor_id = $2 AND id = $3",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(memory_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+        let Some(subject) = subject else {
+            tx.commit().await?;
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT id, content FROM mnestic_memory \
+             WHERE tenant_id = $1 AND actor_id = $2 AND subject = $3 AND id <> $4 \
+               AND is_latest AND status = 'active' AND content IS NOT NULL \
+             ORDER BY lower(recorded_time) DESC \
+             LIMIT $5",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(&subject)
+        .bind(memory_id)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows.into_iter().map(|r| (r.get("id"), r.get("content"))).collect())
+    }
+
+    /// The `extends`/`derives` edges touching a memory, joined to the OTHER endpoint's
+    /// row. An edge with `from_id = memory_id` is outgoing (the memory extends/derives
+    /// FROM the neighbor); one with `to_id = memory_id` is incoming. Tenant- and
+    /// actor-scoped like every read path.
+    pub async fn relation_edges_for(
+        &self,
+        tenant_id: Uuid,
+        actor_id: &str,
+        memory_id: Uuid,
+    ) -> Result<Vec<RelEdge>> {
+        let mut tx = self.begin_tenant(tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT r.relation, (r.from_id = $3) AS outgoing, \
+                    n.content, n.version, lower(n.recorded_time) AS updated_at, n.metadata \
+             FROM mnestic_memory_relation r \
+             JOIN mnestic_memory n \
+               ON n.id = CASE WHEN r.from_id = $3 THEN r.to_id ELSE r.from_id END \
+             WHERE r.tenant_id = $1 AND r.actor_id = $2 \
+               AND (r.from_id = $3 OR r.to_id = $3) \
+               AND n.is_latest AND n.status = 'active' AND n.content IS NOT NULL \
+             ORDER BY r.created_at",
+        )
+        .bind(tenant_id)
+        .bind(actor_id)
+        .bind(memory_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RelEdge {
+                neighbor_content: r.get("content"),
+                neighbor_version: r.get("version"),
+                neighbor_updated_at: r.get("updated_at"),
+                neighbor_metadata: r
+                    .get::<Option<serde_json::Value>, _>("metadata")
+                    .unwrap_or_else(|| serde_json::json!({})),
+                relation: r.get("relation"),
+                outgoing: r.get("outgoing"),
+            })
+            .collect())
+    }
+
     /// An actor's documents (id, title) for the memory-graph view, newest first.
     pub async fn list_documents(
         &self,
@@ -1674,6 +1853,10 @@ mod tests {
         (
             5,
             "30bce045525a81f2f5c1234077c25b9099ba382da9b3ce627c766060bbb9365f1b06e4f1434c8ec4c8c524bc7a85146e",
+        ),
+        (
+            6,
+            "78bf24a712ea0d0894202cc883436f82b9bf7058af748f66f0113656e9bb13a6daf1471dd1ab5121887a34e0f67e0b41",
         ),
     ];
 
