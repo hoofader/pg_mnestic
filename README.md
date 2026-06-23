@@ -45,6 +45,37 @@ Pointing SDK and MCP clients at it: [`docs/05-clients.md`](docs/05-clients.md).
 
 ## How it works
 
+```mermaid
+flowchart TB
+    client["supermemory SDK / MCP client"]
+    client -->|"base URL + tenant key"| server
+
+    subgraph server["mnestic-server: REST /v3 /v4, MCP /mcp"]
+        auth["authenticate: bearer key maps to a tenant, sets the RLS GUC"]
+    end
+
+    server --> write
+    server --> recall
+
+    subgraph engine["mnestic-engine"]
+        write["write: extract facts, embed, resolve and supersede"]
+        recall["recall: vector plus lexical, RRF fusion, rerank, recency decay"]
+    end
+
+    write --> pg
+    recall --> pg
+
+    subgraph pg["your own Postgres: the single datastore"]
+        store["pgvector plus tsvector, bitemporal supersession, RLS tenant isolation"]
+        kg["pg_graphwright knowledge graph"]
+    end
+
+    worker["worker: async ingest and graph maintenance"] --> pg
+    write -. providers .-> ext["OpenAI embed, Anthropic extract"]
+    recall -. optional .-> rerank["TEI reranker"]
+    kg -. optional .-> gliner["GLiNER extractor"]
+```
+
 - **Write (`add`):** an LLM extracts atomic facts from the text; each is embedded (`pgvector`)
   and indexed for lexical search. A new fact that contradicts an older one supersedes it, kept as
   a version (bitemporal), so recall sees the current truth and history is not lost.
