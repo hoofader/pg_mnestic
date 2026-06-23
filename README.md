@@ -18,6 +18,23 @@ Design docs are the source of truth, see [`docs/`](docs/):
 Operational guides: [`DEPLOYMENT.md`](DEPLOYMENT.md), [`MIGRATIONS.md`](MIGRATIONS.md),
 [`SECRETS.md`](SECRETS.md), [`GDPR.md`](GDPR.md).
 
+## Quick start
+
+Bring up Postgres, the server, and the worker, and mint a key, with one command:
+
+```sh
+./quickstart.sh
+```
+
+It builds the images (first run is slow: it compiles the Postgres extensions and the server),
+starts the stack via `docker-compose.yml`, waits for health, and prints a tenant key plus a
+`curl` example. For real memory quality, copy `.env.example` to `.env` and set `OPENAI_API_KEY`
+(embeddings) and `ANTHROPIC_API_KEY` (extraction) first; without them it runs with mock
+providers (the API works, but recall is non-semantic). The server listens on
+`http://localhost:8080` and speaks the supermemory wire API and MCP, so point a supermemory SDK
+or MCP client straight at it (see [`docs/05-clients.md`](docs/05-clients.md)). Stop with
+`docker compose down` (`-v` also wipes the data).
+
 ## Crates
 
 - `mnestic-core` - domain types, provider traits, and the pure resolution logic (`decide`). No DB, no network.

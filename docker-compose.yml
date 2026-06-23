@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Local stack: Postgres (with pgvector + pg_graphwright + pgsql-http), the server, and the
+# worker. `./quickstart.sh` brings it up and mints a key. Ports are published to 127.0.0.1
+# only, and MNESTIC_TRUST_PROXY is set so the server accepts its in-container 0.0.0.0 bind;
+# this is a local/dev posture (plain HTTP). For anything reachable off-host, terminate TLS at
+# a reverse proxy. See DEPLOYMENT.md.
+name: pg-mnestic
+
+services:
+  db:
+    build:
+      context: docker/pg
+    image: mnestic-pg:dev
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/server/Dockerfile
+    image: pg-mnestic-server:local
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+      MNESTIC_BIND: 0.0.0.0:8080
+      MNESTIC_TRUST_PROXY: "1"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Set by quickstart.sh to 1 when no provider keys are present, so the stack still boots.
+      MNESTIC_MOCK_PROVIDERS: ${MNESTIC_MOCK_PROVIDERS:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    command: ["serve"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/server/Dockerfile
+    image: pg-mnestic-server:local
+    depends_on:
+      # Wait for the server so its migrations have run before the worker connects.
+      server:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MNESTIC_MOCK_PROVIDERS: ${MNESTIC_MOCK_PROVIDERS:-}
+    command: ["worker"]
+
+volumes:
+  pgdata:
