@@ -72,6 +72,9 @@ services:
   # fetched on first start (cached in the volume), so the first boot is slow.
   rerank:
     profiles: ["rerank"]
+    # TEI ships the CPU image for amd64 only; on Apple Silicon it runs emulated (Docker
+    # Desktop's Rosetta/qemu), which works but is slower.
+    platform: linux/amd64
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     command: ["--model-id", "BAAI/bge-reranker-base"]
     ports:
