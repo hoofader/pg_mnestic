@@ -14,8 +14,8 @@
 use std::time::Duration;
 
 use mnestic_engine::Engine;
-use mnestic_server::{build_providers, connect_pool, init_tracing, shutdown_signal};
-use mnestic_store::{run_migrations, Store};
+use mnestic_server::{build_providers, connect_pool, init_tracing, prepare_database, shutdown_signal};
+use mnestic_store::Store;
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -31,8 +31,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lease_secs: i64 = env_or("MNESTIC_WORKER_LEASE_SECS", 300);
     let batch: usize = env_or("MNESTIC_WORKER_BATCH", 16);
 
+    // Same migration/runtime split as the server: when MNESTIC_MIGRATION_DATABASE_URL is set,
+    // migrate and provision the runtime role over the superuser connection (idempotent, so it is
+    // harmless that the server already ran it), then serve on the non-super DATABASE_URL. The
+    // worker drives graphwright.maintain() as this role, which is why the role needs EXECUTE on it.
+    prepare_database(&dsn).await?;
     let pool = connect_pool(&dsn).await?;
-    run_migrations(&pool).await?;
     let (embedder, extractor) = build_providers(openai_key, &anthropic_key);
     let engine = Engine::new(Store::new(pool.clone()), embedder, extractor);
     let store = Store::new(pool);

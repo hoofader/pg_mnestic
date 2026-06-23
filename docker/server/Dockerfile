@@ -23,4 +23,8 @@ COPY --from=build \
   /usr/local/bin/
 ENV MNESTIC_BIND=0.0.0.0:8080
 EXPOSE 8080
+# The process binds a network socket and needs no write access to the image, so drop root: a
+# compromised server then has no privileges beyond running the binaries it shipped with.
+RUN useradd --system --no-create-home --uid 10001 mnestic
+USER mnestic
 CMD ["serve"]

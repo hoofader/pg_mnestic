@@ -8,19 +8,49 @@ in any public registry, so run the image built by `docker/pg/Dockerfile` (pgvect
 `pg_graphwright` from source) or an equivalent. See `docker/pg/README.md`. The integration
 tests and CI use this same image, so the test database matches production.
 
-Migration `0007` runs `CREATE EXTENSION pg_graphwright`, which Postgres only allows a
-**superuser**, so the role that runs the migrations (`run_migrations` at startup, or whatever
-applies them) must be a superuser, or the extension must be pre-created. The application's
-own runtime role stays non-superuser and RLS-bound. The worker calls `graphwright.maintain()`
-each cycle to resolve the graph; grant that role `EXECUTE` on the maintenance functions (see
-the `pg_graphwright` README) when it is not the superuser.
+Migration `0007` runs `CREATE EXTENSION pg_graphwright` and `0009` runs `CREATE EXTENSION http`,
+which Postgres only allows a **superuser**. Serving, on the other hand, must **not** be a
+superuser: a superuser bypasses RLS even with `FORCE`, so serving as one silently disables the
+tenant isolation the policies enforce. So migrations and serving use different roles.
+
+## Migration role vs runtime role
+
+`serve` and `worker` read two database URLs:
+
+- `DATABASE_URL`: the non-superuser runtime role the server and worker serve as. This is the role
+  RLS binds, so the tenant GUC actually scopes every query. The compose stack uses `mnestic_app`.
+- `MNESTIC_MIGRATION_DATABASE_URL` (optional): a **superuser** URL. When set, the process runs the
+  migrations and then provisions the runtime role over a short-lived connection on this URL, closes
+  it, and serves on `DATABASE_URL`. The runtime role's name is taken from `DATABASE_URL`'s username
+  and its password from `MNESTIC_APP_PASSWORD`, so provisioning matches what the serving pool
+  authenticates as. When unset, the process migrates on `DATABASE_URL` itself (the single-role
+  path), which keeps a simple one-role deploy working but only enforces RLS if that role is not a
+  superuser.
+
+Provisioning is idempotent (`CREATE ROLE` guarded by a `DO` block, `ALTER ROLE` to keep the
+password and `NOBYPASSRLS` current, then the grants), so it is safe that both the server and the
+worker run it. The grants are the minimum the engine and worker need:
+
+- `USAGE` on schema `public`; `SELECT, INSERT, UPDATE, DELETE` on its tables (and the same via
+  `ALTER DEFAULT PRIVILEGES`, so a later migration's tables stay reachable). That covers
+  add/search/profile/forget/aggregate.
+- `USAGE` on schema `graphwright`, `SELECT` on its catalog tables, and `EXECUTE` on
+  `graphwright.maintain()`. `maintain()` is `SECURITY DEFINER` (it runs as its superuser owner), so
+  `EXECUTE` is enough for the worker to resolve the graph; the watch trigger that fires on a memory
+  write is likewise `SECURITY DEFINER`, so a plain `INSERT` engages it with no further grant. The
+  `SELECT` on the catalog covers the read paths (`related_memory_ids`, `actor_entities`), whose RLS
+  delegates to `mnestic_memory` and so stays tenant-scoped under this role.
+
+The runtime role is never granted `BYPASSRLS`, `SUPERUSER`, ownership, or DDL. To provision it by
+hand instead of via `MNESTIC_MIGRATION_DATABASE_URL`, mirror `provision_app_role` in
+`crates/mnestic-store/src/lib.rs`.
 
 ## Knowledge graph extractor (GLiNER, optional)
 
 The graph resolves entities from memory content. By default it uses `pg_graphwright`'s built-in
 tokenizer, which is coarse (common words become entities). For real named-entity extraction, run
 the GLiNER sidecar (`services/onnx-extractor`, a small Node service wrapping `graphwright-onnx`)
-and point the extractor seam at it. It is opt-in: without it, the graph keeps resolving with the
+and point the extractor extension point at it. It is opt-in: without it, the graph keeps resolving with the
 built-in tokenizer.
 
 ```bash
@@ -40,6 +70,21 @@ The next `graphwright.maintain()` (the worker, each cycle) re-resolves through G
 keeps memory text on your own infrastructure (no third-party call). The extractor runs in the
 maintenance pass, off the write path, so a slow model never blocks a write. To revert, `RESET`
 `graphwright.extractor` and the graph falls back to the built-in tokenizer.
+
+`mnestic.gliner_url` is an outbound POST target: when the extractor is active, `maintain()` POSTs
+memory content to whatever URL the GUC holds. A caller who could change it could make Postgres POST
+every tenant's memory text to a host they control (a server-side request forgery and data
+exfiltration path). So treat the GUC as a trusted, superuser-only setting:
+
+- Set it only with `ALTER DATABASE ... SET` (or `postgresql.conf`), which requires the database
+  owner or a superuser. The runtime role (`mnestic_app`) is neither, so it cannot persist a value.
+- The runtime role must not be granted the ability to `ALTER DATABASE`/`ALTER ROLE ... SET` this
+  GUC. The provisioned grants above give it none, so this holds by default. Note that any role can
+  still `SET mnestic.gliner_url` for its **own** session (it is an unprivileged placeholder GUC),
+  but that affects only that session's `maintain()`; the durable, worker-wide value is the
+  `ALTER DATABASE` one a superuser sets. Do not key any trust on the session value.
+- The whole extractor is opt-in: with `graphwright.extractor` unset, `mnestic_gliner_extract` is
+  never called and the GUC is inert.
 
 ## TLS is mandatory
 

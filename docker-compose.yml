@@ -12,8 +12,11 @@ services:
     build:
       context: docker/pg
     image: mnestic-pg:dev
+    restart: unless-stopped
     environment:
-      POSTGRES_PASSWORD: postgres
+      # No default: the stack refuses to start rather than ship a known password. quickstart.sh
+      # generates one into .env on first run.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -29,11 +32,16 @@ services:
       context: .
       dockerfile: docker/server/Dockerfile
     image: pg-mnestic-server:local
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+      # The runtime role is the non-superuser mnestic_app, so RLS is actually enforced (a
+      # superuser bypasses RLS even with FORCE). The server migrates and provisions mnestic_app
+      # over the superuser MNESTIC_MIGRATION_DATABASE_URL, then serves on DATABASE_URL.
+      DATABASE_URL: postgres://mnestic_app:${MNESTIC_APP_PASSWORD:?set MNESTIC_APP_PASSWORD in .env}@db:5432/postgres
+      MNESTIC_MIGRATION_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres
       MNESTIC_BIND: 0.0.0.0:8080
       MNESTIC_TRUST_PROXY: "1"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -56,12 +64,16 @@ services:
       context: .
       dockerfile: docker/server/Dockerfile
     image: pg-mnestic-server:local
+    restart: unless-stopped
     depends_on:
       # Wait for the server so its migrations have run before the worker connects.
       server:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+      # Same split as the server: serve on the non-super mnestic_app, migrate/provision over the
+      # superuser URL. The worker drives graphwright.maintain() as mnestic_app (granted EXECUTE).
+      DATABASE_URL: postgres://mnestic_app:${MNESTIC_APP_PASSWORD:?set MNESTIC_APP_PASSWORD in .env}@db:5432/postgres
+      MNESTIC_MIGRATION_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/postgres
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       MNESTIC_MOCK_PROVIDERS: ${MNESTIC_MOCK_PROVIDERS:-}

@@ -21,7 +21,27 @@ for arg in "$@"; do
   esac
 done
 
-# Load .env (provider keys) if present, to pick real vs mock providers.
+# Generate the database passwords into .env on first run so the stack never boots with a known
+# password and the one-command flow needs no editing. Only the missing keys are appended; an
+# existing value is left as-is. openssl is in coreutils-adjacent base installs and the Docker
+# toolchain, so it is a safe dependency here.
+touch .env
+gen_secret() { openssl rand -hex 16; }
+ensure_env_key() {
+  local key="$1"
+  if ! grep -q "^${key}=." .env 2>/dev/null; then
+    # Drop any empty placeholder (KEY=) the user copied from .env.example, then append a value.
+    grep -v "^${key}=$" .env > .env.tmp 2>/dev/null || true
+    mv .env.tmp .env
+    echo "${key}=$(gen_secret)" >> .env
+    echo "==> generated ${key} into .env"
+  fi
+}
+ensure_env_key POSTGRES_PASSWORD
+ensure_env_key MNESTIC_APP_PASSWORD
+
+# Load .env (provider keys + the generated passwords) so this script and compose see the same
+# values, and to pick real vs mock providers.
 set -a
 [ -f .env ] && . ./.env
 set +a
@@ -52,7 +72,7 @@ fi
 
 if [ "$WANT_GRAPH" = 1 ]; then
   echo "==> activating the GLiNER graph extractor"
-  # Set the seam at the database level so every new connection (incl. the worker's) sees it,
+  # Set the GUC at the database level so every new connection (incl. the worker's) sees it,
   # then restart the worker so its pool reconnects. The model loads in the background; until it
   # is ready the worker's maintain logs a warning and retries, which is harmless.
   docker compose "${PROFILES[@]}" exec -T db psql -U postgres -v ON_ERROR_STOP=1 -c \

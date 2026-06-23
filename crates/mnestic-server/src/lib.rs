@@ -144,6 +144,62 @@ pub async fn connect_pool(dsn: &str) -> Result<sqlx::PgPool, sqlx::Error> {
         .await
 }
 
+/// Bring the schema and the runtime role to the state serving needs, before the serving pool
+/// opens. Two paths:
+///
+/// - `MNESTIC_MIGRATION_DATABASE_URL` set: migrations need a superuser (`CREATE EXTENSION`), but
+///   serving must not be one (a superuser bypasses RLS even with FORCE, which silently disables
+///   the tenant isolation). So migrate and provision the runtime role over a short-lived
+///   superuser connection, then close it; the caller serves on the non-super `DATABASE_URL`. The
+///   role name is taken from `DATABASE_URL`'s username and its password from `MNESTIC_APP_PASSWORD`.
+/// - unset: migrate on `serving_dsn` itself (the single-role path), so a simple deploy that runs
+///   everything as one role still works.
+///
+/// The superuser connection is opened, used, and dropped here so the long-lived pool never holds
+/// superuser credentials.
+#[cfg(feature = "serve")]
+pub async fn prepare_database(serving_dsn: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let migration_dsn = std::env::var("MNESTIC_MIGRATION_DATABASE_URL").ok();
+    let migration_dsn = migration_dsn.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    match migration_dsn {
+        Some(su_dsn) => {
+            let role = pg_username(serving_dsn).ok_or(
+                "DATABASE_URL must carry the runtime role as its username when \
+                 MNESTIC_MIGRATION_DATABASE_URL is set",
+            )?;
+            let password = std::env::var("MNESTIC_APP_PASSWORD").map_err(|_| {
+                "MNESTIC_APP_PASSWORD must be set when MNESTIC_MIGRATION_DATABASE_URL is set"
+            })?;
+            // A bounded, short-lived pool: just enough to migrate and provision, then dropped.
+            let su_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .connect(su_dsn)
+                .await?;
+            tracing::info!("running migrations over the migration connection");
+            mnestic_store::run_migrations(&su_pool).await?;
+            tracing::info!(role = %role, "provisioning the non-superuser runtime role");
+            mnestic_store::provision_app_role(&su_pool, &role, &password).await?;
+            su_pool.close().await;
+            Ok(())
+        }
+        None => {
+            let pool = connect_pool(serving_dsn).await?;
+            mnestic_store::run_migrations(&pool).await?;
+            pool.close().await;
+            Ok(())
+        }
+    }
+}
+
+/// The username component of a Postgres connection URL, percent-decoded. Used to name the
+/// runtime role to provision, so it always matches the role the serving pool authenticates as.
+#[cfg(feature = "serve")]
+fn pg_username(dsn: &str) -> Option<String> {
+    let opts: sqlx::postgres::PgConnectOptions = dsn.parse().ok()?;
+    Some(opts.get_username().to_string())
+}
+
 /// Build the cloud providers shared by the server and the worker. The embedder model is fixed
 /// (its 1536 dimension is baked into the halfvec schema); extraction defaults to Opus 4.8 and
 /// `MNESTIC_EXTRACT_MODEL` drops it to a cheaper tier.

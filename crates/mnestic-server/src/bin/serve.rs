@@ -18,9 +18,10 @@ use std::sync::Arc;
 
 use mnestic_engine::Engine;
 use mnestic_server::{
-    app, build_providers, connect_pool, init_tracing, shutdown_signal, AppState, RateLimiter,
+    app, build_providers, connect_pool, init_tracing, prepare_database, shutdown_signal, AppState,
+    RateLimiter,
 };
-use mnestic_store::{run_migrations, Store};
+use mnestic_store::Store;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,8 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fail fast rather than expose plaintext bearer tokens on a public socket.
     mnestic_server::check_bind_safety(&bind, trust_proxy)?;
 
+    // CREATE EXTENSION needs a superuser, but serving must not be one (a superuser bypasses RLS
+    // even with FORCE). When MNESTIC_MIGRATION_DATABASE_URL is set the server migrates and
+    // provisions the runtime role over that superuser connection, then serves on the non-super
+    // DATABASE_URL; unset, it migrates on the serving pool (the single-role path).
+    prepare_database(&dsn).await?;
     let pool = connect_pool(&dsn).await?;
-    run_migrations(&pool).await?;
 
     // MNESTIC_MOCK_PROVIDERS swaps in network-free mock embedder/extractor, so the server runs
     // with no API keys. It is for conformance and local demos (deterministic, no real embeddings

@@ -25,6 +25,74 @@ pub async fn run_migrations(pool: &PgPool) -> std::result::Result<(), sqlx::migr
     MIGRATOR.run(pool).await
 }
 
+/// Idempotently provision the non-superuser runtime role. Run over a superuser pool (the
+/// migration connection), since it creates a role and grants on objects the migrations own.
+///
+/// The runtime role must be `NOBYPASSRLS`: a superuser bypasses RLS even with FORCE, so serving
+/// as a superuser would silently disable the tenant isolation the policies enforce. The grants
+/// are the minimum the engine and worker need. `EXECUTE` on `graphwright.maintain()` is enough
+/// for the graph because that function is `SECURITY DEFINER` (it runs as its superuser owner);
+/// the runtime role keeps `SELECT` on the `graphwright` catalog for the read paths
+/// (`related_memory_ids`, `actor_entities`), whose RLS delegates to `mnestic_memory` and so stays
+/// tenant-scoped under this role. No grant here confers `BYPASSRLS`, ownership, or DDL.
+pub async fn provision_app_role(pool: &PgPool, role: &str, password: &str) -> Result<()> {
+    // Reject anything that is not a bare identifier: `role` is interpolated into DDL (role names
+    // and GRANT targets cannot be bound), so an attacker-controlled name would be an injection
+    // point. The password is bound through format() into a quoted literal below, but constraining
+    // both to known-safe shapes keeps the whole block free of caller-controlled SQL.
+    if role.is_empty() || !role.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(sqlx::Error::Protocol(format!(
+            "invalid app role name {role:?}: expected [A-Za-z0-9_]+"
+        )));
+    }
+    // Quote the password as a dollar-quoted literal with a tag the password cannot contain, so a
+    // password with quotes or backslashes cannot break out. The role shape is already validated.
+    let pw_lit = format!("$mnpw${password}$mnpw$");
+    if password.contains("$mnpw$") {
+        return Err(sqlx::Error::Protocol(
+            "app role password may not contain the literal $mnpw$".to_string(),
+        ));
+    }
+
+    // CREATE ROLE has no IF NOT EXISTS, so guard it in a DO block; ALTER ROLE then makes the
+    // password and NOBYPASSRLS true even if the role pre-existed from an earlier deploy.
+    let create = format!(
+        "DO $$ BEGIN \
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN \
+             CREATE ROLE {role} LOGIN NOBYPASSRLS PASSWORD {pw_lit}; \
+           END IF; \
+         END $$;"
+    );
+    sqlx::query(&create).execute(pool).await?;
+    // Keep the password and the NOBYPASSRLS posture in sync on every provision, so rotating
+    // MNESTIC_APP_PASSWORD takes effect and a role created elsewhere cannot serve with BYPASSRLS.
+    sqlx::query(&format!("ALTER ROLE {role} LOGIN NOBYPASSRLS PASSWORD {pw_lit}"))
+        .execute(pool)
+        .await?;
+
+    // DML on the application schema. GRANT ON ALL TABLES covers only tables that exist now;
+    // ALTER DEFAULT PRIVILEGES extends the same grant to tables a later migration creates, so the
+    // role does not silently lose access after an upgrade.
+    for stmt in [
+        format!("GRANT USAGE ON SCHEMA public TO {role}"),
+        format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}"),
+        format!(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public \
+             GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role}"
+        ),
+        // The knowledge graph. USAGE + SELECT on the catalog covers the read paths; EXECUTE on
+        // maintain() (the only graphwright function the runtime calls) covers the worker. The
+        // watch trigger that fires on a memory write is itself SECURITY DEFINER, so a plain
+        // INSERT engages it without any further graphwright grant.
+        format!("GRANT USAGE ON SCHEMA graphwright TO {role}"),
+        format!("GRANT SELECT ON ALL TABLES IN SCHEMA graphwright TO {role}"),
+        format!("GRANT EXECUTE ON FUNCTION graphwright.maintain() TO {role}"),
+    ] {
+        sqlx::query(&stmt).execute(pool).await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
