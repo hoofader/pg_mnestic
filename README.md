@@ -1,10 +1,41 @@
 # Mnestic
 
-Mnestic is a Postgres-native long-term memory engine. The customer's own Postgres is the single
-datastore: vector + lexical search, tenant isolation via RLS, bitemporal correctness, and an
-RLS-aware knowledge graph. Use it as an embedded Rust library (`mnestic-engine`) or run the
-server (`mnestic-server`), which speaks the supermemory wire API and MCP, so the official
-supermemory SDKs work against it unchanged (see [`docs/05-clients.md`](docs/05-clients.md)).
+**A self-hosted, drop-in [supermemory](https://supermemory.ai) replacement.** Point any
+supermemory SDK or MCP client at Mnestic and it works unchanged, with your data in your own
+Postgres instead of a SaaS.
+
+It is a Postgres-native long-term memory engine: vector + lexical search, tenant isolation via
+RLS, bitemporal correctness, and an RLS-aware knowledge graph, all in the customer's own
+database. Run it as a server (`mnestic-server`) or embed it as a Rust library (`mnestic-engine`).
+
+## Drop-in supermemory compatibility
+
+Mnestic serves the supermemory wire API (`/v3/documents`, `/v3/search`, `/v4/search`,
+`/v4/profile`, `/v4/memories`) and MCP, so the official supermemory SDKs are clients of it with
+no change beyond the base URL:
+
+```ts
+import Supermemory from 'supermemory';
+
+const client = new Supermemory({
+  baseURL: 'http://localhost:8080',          // your Mnestic, not the cloud
+  apiKey: process.env.SUPERMEMORY_API_KEY,    // a tenant key from issue-key
+});
+
+await client.add({ content: 'I ship on Fridays.', containerTag: 'me' });
+const { results } = await client.search.memories({ q: 'when do I ship', containerTag: 'me' });
+```
+
+It is the same for the Python SDK (`base_url=`) and for MCP clients (point them at
+`http://localhost:8080/mcp`). This is a tested gate, not a claim: CI drives the **real**
+`supermemory` npm SDK against a live Mnestic on every push (the `sdk conformance` job), through
+add, search, profile, versioned update, and forget.
+
+- What works and the out-of-scope SaaS surface: [`docs/04-compatibility.md`](docs/04-compatibility.md).
+- Pointing SDK and MCP clients at it: [`docs/05-clients.md`](docs/05-clients.md).
+- A head-to-head harness (Mnestic vs supermemory over one wire): [`docs/06-comparison.md`](docs/06-comparison.md).
+
+## Docs
 
 Design docs are the source of truth, see [`docs/`](docs/):
 
@@ -12,8 +43,8 @@ Design docs are the source of truth, see [`docs/`](docs/):
 - [`docs/02-architecture.md`](docs/02-architecture.md)
 - [`docs/03-low-level-design.md`](docs/03-low-level-design.md)
 - [`docs/04-compatibility.md`](docs/04-compatibility.md) - the supermemory wire surface, what is and isn't implemented.
-- [`docs/05-clients.md`](docs/05-clients.md) - pointing supermemory SDK clients at pg_mnestic.
-- [`docs/06-comparison.md`](docs/06-comparison.md) - the head-to-head harness: pg_mnestic vs supermemory over one wire.
+- [`docs/05-clients.md`](docs/05-clients.md) - pointing supermemory SDK clients at Mnestic.
+- [`docs/06-comparison.md`](docs/06-comparison.md) - the head-to-head harness: Mnestic vs supermemory over one wire.
 
 Operational guides: [`DEPLOYMENT.md`](DEPLOYMENT.md), [`MIGRATIONS.md`](MIGRATIONS.md),
 [`SECRETS.md`](SECRETS.md), [`GDPR.md`](GDPR.md).
