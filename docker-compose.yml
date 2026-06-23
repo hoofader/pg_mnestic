@@ -40,6 +40,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Set by quickstart.sh to 1 when no provider keys are present, so the stack still boots.
       MNESTIC_MOCK_PROVIDERS: ${MNESTIC_MOCK_PROVIDERS:-}
+      # Set by `quickstart.sh --rerank` to the in-network TEI sidecar; empty otherwise.
+      MNESTIC_RERANK_URL: ${MNESTIC_RERANK_URL:-}
     ports:
       - "127.0.0.1:8080:8080"
     command: ["serve"]
@@ -65,5 +67,32 @@ services:
       MNESTIC_MOCK_PROVIDERS: ${MNESTIC_MOCK_PROVIDERS:-}
     command: ["worker"]
 
+  # Optional: the self-hosted reranker (HuggingFace TEI). Enable with the `rerank` profile, e.g.
+  # `quickstart.sh --rerank`, which also sets MNESTIC_RERANK_URL on the server. The model is
+  # fetched on first start (cached in the volume), so the first boot is slow.
+  rerank:
+    profiles: ["rerank"]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    command: ["--model-id", "BAAI/bge-reranker-base"]
+    ports:
+      - "127.0.0.1:8082:80"
+    volumes:
+      - tei-cache:/data
+
+  # Optional: the GLiNER entity extractor for the knowledge graph. Enable with the `graph`
+  # profile (`quickstart.sh --graph`), which also activates it in the database. The db reaches
+  # it in-network at onnx:8081; the GLiNER model is fetched on first start.
+  onnx:
+    profiles: ["graph"]
+    build:
+      context: services/onnx-extractor
+    image: mnestic-onnx:dev
+    ports:
+      - "127.0.0.1:8083:8081"
+    volumes:
+      - onnx-cache:/root/.cache/huggingface
+
 volumes:
   pgdata:
+  tei-cache:
+  onnx-cache:
