@@ -39,6 +39,16 @@ impl Reranker for ReversingReranker {
     }
 }
 
+/// Always errors, standing in for a down or flaky reranker sidecar.
+struct FailingReranker;
+
+#[async_trait]
+impl Reranker for FailingReranker {
+    async fn rerank(&self, _query: &str, _candidates: &[String]) -> Result<Vec<Scored>> {
+        Err(mnestic_core::Error::Provider("reranker unavailable".into()))
+    }
+}
+
 async fn connect(opts: PgConnectOptions) -> PgPool {
     let mut last_err = None;
     for _ in 0..30 {
@@ -116,4 +126,53 @@ async fn rerank_flag_gates_reranking() {
     reversed_off.reverse();
     assert_eq!(on, reversed_off, "rerank=true applies the reranker, reversing the engine order");
     assert_ne!(on, off, "the two flag values yield different orders");
+}
+
+#[tokio::test]
+async fn reranker_failure_falls_back_to_retrieval_order() {
+    let container = GenericImage::new("mnestic-pg", "dev")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_PASSWORD", "postgres")
+        .start()
+        .await
+        .expect("start pgvector container");
+
+    let host = container.get_host().await.expect("host");
+    let port = container.get_host_port_ipv4(5432.tcp()).await.expect("mapped port");
+    let opts = PgConnectOptions::new()
+        .host(&host.to_string())
+        .port(port)
+        .username("postgres")
+        .password("postgres")
+        .database("postgres");
+    let pool = connect(opts).await;
+    run_migrations(&pool).await.expect("migrations");
+
+    let tenant: Uuid =
+        sqlx::query_scalar("INSERT INTO mnestic_tenant (external_id) VALUES ('rfail') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("tenant");
+
+    let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+    let extractor: Arc<dyn Extractor> = Arc::new(MockExtractor);
+    let engine = Engine::new(Store::new(pool), embedder, extractor)
+        .with_reranker(Arc::new(FailingReranker));
+
+    let tags: Vec<String> = Vec::new();
+    for content in ["alpha fact", "beta fact"] {
+        engine.add(tenant, "u", &tags, content, "conversation", None).await.unwrap();
+    }
+
+    // A reranker error must not fail recall: it degrades to the retrieval order, still
+    // returning the memories rather than propagating the error.
+    let hits = engine
+        .recall_scoped(tenant, "u", &tags, "fact", 10, None, false, true)
+        .await
+        .expect("recall succeeds despite the reranker failing");
+    let contents: Vec<String> = hits.iter().filter_map(|h| h.content.clone()).collect();
+    assert_eq!(contents.len(), 2, "both memories are returned on the fallback path");
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use mnestic_core::{
     decide, Candidate, Ctx, Embedder, ExistingMatch, Extractor, MemType, Ontology, QueryRewriter,
-    RelationClassifier, Reranker, ResolveAction, Scored,
+    RelationClassifier, Reranker, ResolveAction,
 };
 use mnestic_store::{NewChunk, NewMemoryFull, PendingSource, Store};
 use uuid::Uuid;
@@ -234,23 +234,32 @@ impl Engine {
             // empty string and so sorts low; accepted for now, since the reranker has
             // no text to score it on.
             let texts: Vec<String> = hits.iter().map(|h| h.content.clone().unwrap_or_default()).collect();
-            let scored: Vec<Scored> = reranker.rerank(query, &texts).await?;
-            let mut seen = std::collections::HashSet::new();
-            let mut reordered = Vec::with_capacity(hits.len());
-            for s in &scored {
-                if s.index < hits.len() && seen.insert(s.index) {
-                    reordered.push(hits[s.index].clone());
+            match reranker.rerank(query, &texts).await {
+                Ok(scored) => {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut reordered = Vec::with_capacity(hits.len());
+                    for s in &scored {
+                        if s.index < hits.len() && seen.insert(s.index) {
+                            reordered.push(hits[s.index].clone());
+                        }
+                    }
+                    // Keep candidates the reranker omitted (a top-k reranker) after the
+                    // reranked ones, in their original order, so reranking never shrinks the
+                    // result below `limit`.
+                    for (i, hit) in hits.iter().enumerate() {
+                        if !seen.contains(&i) {
+                            reordered.push(hit.clone());
+                        }
+                    }
+                    hits = reordered;
+                }
+                // A reranker failure must not fail recall: a down or flaky sidecar degrades to
+                // the retrieval order (RRF + recency + confidence), which `truncate` trims to
+                // `limit` below. The over-fetched pool already holds the same set, just unranked.
+                Err(e) => {
+                    tracing::warn!(target: "mnestic::rerank", error = %e, "reranker failed; using retrieval order");
                 }
             }
-            // Keep candidates the reranker omitted (a top-k reranker) after the
-            // reranked ones, in their original order, so reranking never shrinks the
-            // result below `limit`.
-            for (i, hit) in hits.iter().enumerate() {
-                if !seen.contains(&i) {
-                    reordered.push(hit.clone());
-                }
-            }
-            hits = reordered;
         }
 
         hits.truncate(limit.max(0) as usize);
