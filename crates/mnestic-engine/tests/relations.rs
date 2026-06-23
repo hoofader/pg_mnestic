@@ -114,3 +114,77 @@ async fn second_same_subject_add_creates_extends_edge() {
     assert!(edges[0].outgoing, "the second memory extends FROM the first (outgoing)");
     assert_eq!(edges[0].neighbor_content.as_deref(), Some("user adopted a dog"));
 }
+
+#[tokio::test]
+async fn worker_classifies_relations_on_async_ingest() {
+    let container = GenericImage::new("mnestic-pg", "dev")
+        .with_exposed_port(5432.tcp())
+        .with_wait_for(WaitFor::message_on_stderr(
+            "database system is ready to accept connections",
+        ))
+        .with_env_var("POSTGRES_PASSWORD", "postgres")
+        .start()
+        .await
+        .expect("start pgvector container");
+
+    let host = container.get_host().await.expect("host");
+    let port = container.get_host_port_ipv4(5432.tcp()).await.expect("mapped port");
+    let opts = PgConnectOptions::new()
+        .host(&host.to_string())
+        .port(port)
+        .username("postgres")
+        .password("postgres")
+        .database("postgres");
+    let pool = connect(opts).await;
+    run_migrations(&pool).await.expect("migrations");
+
+    let tenant: Uuid = sqlx::query_scalar(
+        "INSERT INTO mnestic_tenant (external_id) VALUES ('relasync') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("tenant");
+
+    let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+    let extractor: Arc<dyn Extractor> = Arc::new(SameSubjectExtractor);
+    let engine = Engine::new(Store::new(pool.clone()), embedder, extractor)
+        .with_classifier(Arc::new(MockRelationClassifier));
+
+    let tags: Vec<String> = Vec::new();
+    let meta = serde_json::json!({});
+
+    // Enqueue and drain the first source. The worker extracts and commits it; with no
+    // same-subject neighbor yet, no edge forms.
+    engine
+        .enqueue(tenant, "user", &tags, "user adopted a dog", "conversation", Some("c1"), &meta)
+        .await
+        .expect("enqueue 1");
+    assert_eq!(engine.process_pending(tenant, 300, 10).await.unwrap(), 1, "first source drained");
+
+    let first_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM mnestic_memory WHERE tenant_id=$1 AND actor_id='user' \
+         AND content='user adopted a dog'",
+    )
+    .bind(tenant)
+    .fetch_one(&pool)
+    .await
+    .expect("first memory id");
+    assert!(
+        engine.store().relation_edges_for(tenant, "user", first_id).await.unwrap().is_empty(),
+        "no edge after the first async memory"
+    );
+
+    // Enqueue and drain the second. The worker classifies it post-commit against the first,
+    // exactly as the sync path does, so the async memory also gets an edge.
+    engine
+        .enqueue(tenant, "user", &tags, "user has a pet", "conversation", Some("c2"), &meta)
+        .await
+        .expect("enqueue 2");
+    assert_eq!(engine.process_pending(tenant, 300, 10).await.unwrap(), 1, "second source drained");
+
+    let edges = engine.store().relation_edges_for(tenant, "user", first_id).await.unwrap();
+    assert_eq!(edges.len(), 1, "the worker created a relation edge, got {edges:?}");
+    assert_eq!(edges[0].relation, "extends");
+    assert!(!edges[0].outgoing, "the first memory is extended BY the second (incoming)");
+    assert_eq!(edges[0].neighbor_content.as_deref(), Some("user has a pet"));
+}

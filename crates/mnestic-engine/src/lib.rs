@@ -147,11 +147,11 @@ impl Engine {
         self
     }
 
-    /// Add a relation classifier. After a synchronous write (`add`/`add_at`) commits, the
-    /// engine asks it which same-subject memories the new ones extend/derive from, and
-    /// persists those edges. The pass is post-commit and best-effort, so the model call never
-    /// holds the write transaction open and a classifier error never fails the write. The
-    /// async (`dreaming: dynamic`) worker path does not classify yet.
+    /// Add a relation classifier. After a write commits (the synchronous `add`/`add_at` path
+    /// and the async `dreaming: dynamic` worker path alike), the engine asks it which
+    /// same-subject memories the new ones extend/derive from, and persists those edges. The
+    /// pass is post-commit and best-effort, so the model call never holds the write transaction
+    /// open and a classifier error never fails the write.
     pub fn with_classifier(mut self, classifier: Arc<dyn RelationClassifier>) -> Self {
         self.classifier = Some(classifier);
         self
@@ -682,10 +682,23 @@ impl Engine {
             embeddings: &embeddings,
         };
         for attempt in 0..MAX_CONFLICT_RETRIES {
-            // Ok(_) covers both "we committed" and "we lost the claim and rolled back": either
-            // way this source is handled (by us or the reclaiming worker), so do not retry.
             match self.persist_into_source(&req, pending.id, pending.claimed_at).await {
-                Ok(_) => return Ok(()),
+                // Committed: classify relations on the new memories, post-commit and best-effort,
+                // exactly as the sync path does, so async-ingested memories also get edges.
+                Ok(Some(result)) => {
+                    if let Err(e) =
+                        self.classify_relations(tenant_id, &pending.actor_id, &result.inserted).await
+                    {
+                        tracing::warn!(
+                            target: "mnestic::relations",
+                            error = %e,
+                            "relation classification failed; memories committed without edges"
+                        );
+                    }
+                    return Ok(());
+                }
+                // Lost the claim mid-extraction; the reclaiming worker handles the source.
+                Ok(None) => return Ok(()),
                 Err(e) if e.is_transient_conflict() && attempt + 1 < MAX_CONFLICT_RETRIES => continue,
                 Err(e) => return Err(e),
             }
@@ -695,25 +708,27 @@ impl Engine {
 
     /// Persist a claimed source's candidates and clear its extraction flag in one
     /// transaction, so the source is marked done exactly when its memories commit. Returns
-    /// false (and rolls back the writes) when the claim was lost mid-extraction: another
-    /// worker reclaimed the source after the lease lapsed, so this pass's memories would be
-    /// duplicates and are discarded.
+    /// `Some(result)` on commit, or `None` (and rolls back the writes) when the claim was lost
+    /// mid-extraction: another worker reclaimed the source after the lease lapsed, so this
+    /// pass's memories would be duplicates and are discarded. The `AddResult` lets the caller
+    /// run post-commit work (relation classification) on the ids that actually landed.
     async fn persist_into_source(
         &self,
         req: &WriteRequest<'_>,
         source_id: Uuid,
         claimed_at: DateTime<Utc>,
-    ) -> Result<bool> {
+    ) -> Result<Option<AddResult>> {
         let mut tx = self.store.begin_tenant(req.tenant_id).await?;
-        self.persist_candidates(&mut tx, req, source_id).await?;
+        let result = self.persist_candidates(&mut tx, req, source_id).await?;
         let still_ours =
             Store::mark_source_extracted_tx(&mut tx, req.tenant_id, source_id, claimed_at).await?;
         if still_ours {
             tx.commit().await?;
+            Ok(Some(result))
         } else {
             tx.rollback().await?;
+            Ok(None)
         }
-        Ok(still_ours)
     }
 
     /// Read the actor's cached profile (durable facts plus recent context). Returns

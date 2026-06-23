@@ -161,7 +161,7 @@ Out of scope, by design (the SaaS platform surface, not the self-hosted memory e
 
 Known limitations and remaining work:
 
-- `aggregate`'s `extends`/`derives` edges are classified on the synchronous write path only; a memory ingested via `dreaming: dynamic` (the worker) gets no relation edges yet, the same gap as async metadata. `extends`/`derives` land in `parents`/`children` by edge direction. Relations are detected only within an entity (shared `subject`), and only the supersession `updates` are exact without a classifier configured.
+- `aggregate`'s `extends`/`derives` edges are classified post-commit on both the synchronous write path and the async `dreaming: dynamic` worker path (best-effort: a classifier error never fails the write). `extends`/`derives` land in `parents`/`children` by edge direction. Relations are detected only within an entity (shared `subject`), and only the supersession `updates` are exact without a classifier configured.
 - `context.related` is populated from the `pg_graphwright` knowledge graph: memories sharing a resolved entity with the hit. With the default built-in tokenizer the extraction is coarse (common words become entities), so `related` is noisy; a GLiNER (`graphwright-onnx`) extractor is the planned upgrade that sharpens it. The `memory-graph` MCP tool also surfaces the actor's extracted entities.
 - `entityContext` (`/v3/documents`) is accepted and ignored (no per-container extraction guidance yet). `taskType: memory` extraction is synchronous; there is no `dreaming: dynamic` async option on `/v3/documents` (it exists on `/v4/memories`).
 - `threshold` is a cutoff relative to the strongest hit for the query, not supermemory's absolute score, because our `similarity` is a fused RRF value, not a 0-1 cosine.
