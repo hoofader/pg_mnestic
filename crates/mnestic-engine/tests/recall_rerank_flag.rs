@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test that the per-request `rerank` flag gates reranking. A reranker that
 //! reverses the SQL order makes its effect observable: with `rerank=true` recall returns

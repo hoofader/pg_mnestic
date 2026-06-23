@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Migration 0008 registers a graphwright watch on `mnestic_memory(content)` keyed on the stable
 //! `id` (replacing 0007's ctid-keyed index), and the worker's `graphwright_maintain()` resolves

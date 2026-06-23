@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 //
 // k6 load test for the mnestic server. Drives a mix of saves (/v4/memories) and recalls
 // (/v4/search) against one tenant, under bearer auth. See load/README.md to run it.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! The `/v4/memory` tool endpoint (doc 04 §3): one call with `action` save or forget.
 //! Save is the same path as `/v4/memories`; forget is content-based (the engine extracts

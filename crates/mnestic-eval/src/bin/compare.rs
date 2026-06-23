@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Head-to-head: run one benchmark through two memory engines over the supermemory
 //! wire and print a side-by-side. Both backends are HTTP, so the only variable is the

@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: MIT
 
 -- The knowledge-graph layer over memory content. pg_graphwright is required (the deployment
 -- runs the docker/pg image that carries it); CREATE EXTENSION needs a superuser migration role.

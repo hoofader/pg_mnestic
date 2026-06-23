@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 #
 # The mnestic-server application image: the REST + MCP server (`serve`), the async worker
 # (`worker`), and the operator CLIs. Built once and reused for every service in the compose

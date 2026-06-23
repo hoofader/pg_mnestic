@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Async-ingestion worker. Build with `--features serve`. Drains sources enqueued by the
 //! `dreaming: dynamic` path: it polls each tenant, claims pending sources (leasing them), and

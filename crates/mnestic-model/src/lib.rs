@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Provider trait impls. Mock impls are always built and network-free; the
 //! OpenAI impls sit behind the `openai` feature.

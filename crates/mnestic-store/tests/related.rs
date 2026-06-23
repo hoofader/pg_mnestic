@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for `related_memory_ids`: two memories that share a distinctive graph
 //! entity surface relate to each other after maintain resolves the watch, while an unrelated

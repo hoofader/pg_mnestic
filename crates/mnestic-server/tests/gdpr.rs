@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for the GDPR paths: export_actor returns a subject's data as JSON, and
 //! purge_actor hard-deletes it across every table without touching another actor.

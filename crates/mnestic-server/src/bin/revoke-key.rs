@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Revokes an API key. Build with `--features cli`.
 //! Usage: revoke-key <key-digest-hex | sm_token>

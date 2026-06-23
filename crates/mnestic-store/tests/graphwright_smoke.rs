@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Smoke test for the custom Postgres image (`mnestic-pg:dev`): it must carry pg_graphwright
 //! alongside pgvector, the mnestic migrations must still run on it, and the graphwright index

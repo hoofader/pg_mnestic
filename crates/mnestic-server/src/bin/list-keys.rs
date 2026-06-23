@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Lists a tenant's API keys (active and revoked). Build with `--features cli`.
 //! Usage: list-keys <tenant-external-id>

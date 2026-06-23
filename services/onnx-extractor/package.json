@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.1.0",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "description": "HTTP wrapper around graphwright-onnx's GLiNER extractor, the entity extractor for pg_graphwright's seam.",
   "engines": { "node": ">=20" },
   "dependencies": {

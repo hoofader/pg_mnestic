@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! The supermemory `filters` metadata-filter DSL (sdk-ts `SearchMemoriesParams.filters`).
 //! A recursive `OR`/`AND` tree of leaf predicates, evaluated in pure Rust against the

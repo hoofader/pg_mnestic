@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Migration 0009 installs the `http` extension (from the image) and the `mnestic_gliner_extract`
 //! function that the pg_graphwright extractor seam calls to reach the GLiNER sidecar. This guards

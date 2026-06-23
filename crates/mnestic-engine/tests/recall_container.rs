@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for the container_tags recall filter: the same actor holds
 //! memories under different containers, and a scoped recall returns only the

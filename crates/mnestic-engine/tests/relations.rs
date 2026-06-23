@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for the post-commit relation pass: with a classifier configured,
 //! adding a second same-subject memory yields an `extends` edge to the first. The

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for the forget path: tombstoning by custom_id drops the memory
 //! from recall and the cached profile, is scoped to the owning actor, and is

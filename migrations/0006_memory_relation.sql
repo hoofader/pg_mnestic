@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: MIT
 
 -- Graph edges between memories beyond the supersession chain (the SDK's `updates`):
 -- `extends` (one adds detail to another) and `derives` (one is inferred from another).

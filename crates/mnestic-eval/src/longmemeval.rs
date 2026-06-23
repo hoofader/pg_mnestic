@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Convert LongMemEval (`longmemeval_s.json` / `_m` / `_oracle`) into Mnestic's
 //! normalized dataset. The file is a JSON array of instances; each carries a

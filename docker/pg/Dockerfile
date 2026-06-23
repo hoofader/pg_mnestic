@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 #
 # Postgres 16 with pgvector (the base image) plus pg_graphwright, built from source via pgrx.
 # The integration tests, CI, and a production deploy all run against this image so the database

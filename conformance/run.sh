@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 #
 # Runs the sdk-ts conformance suite against a throwaway, keyless pg_mnestic: builds the image,
 # starts Postgres and the server (mock providers, no API keys), mints a tenant key, and drives

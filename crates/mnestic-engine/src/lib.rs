@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Orchestration: the write path that turns raw text into resolved memories.
 //! Async model calls (extract, embed) run first; persistence and resolution then

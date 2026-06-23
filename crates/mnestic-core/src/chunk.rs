@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Text chunking for the document/RAG path. A document is split into overlapping
 //! windows before embedding so a passage that straddles a window boundary is still

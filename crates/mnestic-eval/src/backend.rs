@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! The memory backend the runner drives. One trait, two transports: in-process
 //! `EngineBackend` and, behind `real`, the supermemory wire `HttpBackend`. The same

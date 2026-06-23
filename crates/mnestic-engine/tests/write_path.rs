@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized write-path test against pgvector/pgvector:pg16. Exercises Engine::add
 //! end to end as a non-superuser, covering supersession in event-time order,

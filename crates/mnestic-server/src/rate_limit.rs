@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Per-key token-bucket rate limiting, in-process. Each API key (identified by its stored
 //! SHA-256 digest) gets its own bucket, so one tenant's traffic can't starve another's. The

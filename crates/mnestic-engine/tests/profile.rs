@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized profile test against pgvector/pgvector:pg16. Checks that the profile
 //! refreshed on write keeps durable, high-confidence facts as static and the recent

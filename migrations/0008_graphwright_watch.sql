@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: MIT
 
 -- The ctid-keyed index path tied graph provenance to a row's physical location, which the
 -- UPDATEs mnestic runs (dedup confidence bumps, supersession, forget) move, so a mention could

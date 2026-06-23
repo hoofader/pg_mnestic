@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for the memory-relation edges: an inserted `extends` edge is
 //! visible from both endpoints with the right `outgoing` flag, and forgetting either

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized integration test: RLS isolation, single-valued supersession, and
 //! multi-valued coexistence against pgvector/pgvector:pg16. RLS is exercised as

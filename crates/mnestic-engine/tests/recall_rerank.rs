@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for the recall reranker and query-rewriter hooks. Uses scripted
 //! mocks: an alphabetical reranker (so its ordering is distinct from the SQL order)

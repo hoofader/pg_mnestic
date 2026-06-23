@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-only
+-- SPDX-License-Identifier: MIT
 
 -- The GLiNER entity extractor for the knowledge graph. pg_graphwright's extractor seam is a SQL
 -- function f(text) -> text[]; this one POSTs the row text to the graphwright-onnx sidecar through

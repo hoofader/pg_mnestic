@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 #
 # One-command local pg_mnestic: build and start Postgres, the server, and the worker, then mint
 # a tenant key and print how to use it. Re-runnable.

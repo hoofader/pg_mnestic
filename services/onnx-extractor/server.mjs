@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 // HTTP wrapper around graphwright-onnx's GLiNER extractor. pg_graphwright's extractor seam is a
 // SQL function f(text) -> text[]; the in-database side (the `http` extension) POSTs here and this

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 // Drives the official supermemory sdk-ts (the npm `supermemory` package) against a live
 // pg_mnestic, to prove the SDK is a drop-in client. It exercises the memory lifecycle the

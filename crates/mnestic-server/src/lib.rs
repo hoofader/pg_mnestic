@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! The supermemory-compatible REST shim (doc 04). It maps supermemory's wire contract
 //! onto the Mnestic engine so the existing shells drive Mnestic unchanged. This module

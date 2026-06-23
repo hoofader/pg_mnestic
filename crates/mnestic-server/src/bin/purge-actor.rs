@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Permanently deletes everything held for one subject (GDPR right to erasure). Build with
 //! `--features cli`.

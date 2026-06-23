@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 #
 # The GLiNER entity-extraction sidecar for pg_graphwright. graphwright and graphwright-onnx are
 # installed from git (they build their dist on npm's prepare), and @lmoe/gliner-onnx pulls the

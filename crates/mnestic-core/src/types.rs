@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for /v4/search and /v4/profile: ingest under an actor via the
 //! engine, then drive the read endpoints with tower::oneshot and a mock engine.

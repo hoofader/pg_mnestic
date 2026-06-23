@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Cloud OpenAI provider impls (embeddings + extraction). Gated behind the `openai`
 //! feature so the default build (and tests) make no network calls. Traits keep a

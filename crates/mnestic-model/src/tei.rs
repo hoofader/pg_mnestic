@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Self-hosted reranker over a HuggingFace Text Embeddings Inference (TEI) sidecar.
 //! Gated behind the `rerank` feature so the default build pulls no HTTP stack. Recall

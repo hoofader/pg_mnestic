@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Postgres access over sqlx. Runtime query functions only (no compile-time
 //! macros), so the build needs no DATABASE_URL.
@@ -1949,39 +1949,39 @@ mod tests {
     const FROZEN: &[(i64, &str)] = &[
         (
             1,
-            "36e381dad2f9d73367beb12d8f045dbed9d3c2a8aadf9241404e04d53c22d3532e138d675fab1b39e7c3eda100f2a2b4",
+            "c4e2920d11979f2f1f67fd0770e681b54b1762c69465c30d52bee12521944264006e21f07a1a328d428d0b277a8ff0ee",
         ),
         (
             2,
-            "9cfe123f3469bdc2a878125c22f3d8ae2a712b2fd8568b3000dd224bf570fb3eb6f6a9bfafeef0286a2577fc269dce9c",
+            "a8c38a830f981f4ee297180c80773ca31222493c9045114c06f4498ec60a042fddf18c47a70ca819a4592a58da5d6dfa",
         ),
         (
             3,
-            "1e6096be8b4b7bbc1d14a2c45e763379dfe35d95d0402b6998aadeb3744e9ed5ac9d4cf68f3457dc558da9d7e9784919",
+            "8a74abce742ffea92e83de9186be96c9bc8b66aa4b3158c012efa282b9d78e1db4cc99cf4841f0b9cd3139198e3801de",
         ),
         (
             4,
-            "231ddb71199abdf22c74ce9c72f53032162e6a8e5e264f742abc21272afc1939d9c8a8d0ef0c5826aeac1ebb8fcfae3e",
+            "3391e67dea10b474469bac137b2a573d80c6726e65c8df6f4db2d17e87b95418a0bfbf0a5171c07c5a464d781d1f6938",
         ),
         (
             5,
-            "30bce045525a81f2f5c1234077c25b9099ba382da9b3ce627c766060bbb9365f1b06e4f1434c8ec4c8c524bc7a85146e",
+            "5f8eb4968522d0c23323692d7c9f73f7e5436a24edd54939e0e7d6e438bd1f7ac5ad0946068afafd5f1602c72fd729a2",
         ),
         (
             6,
-            "78bf24a712ea0d0894202cc883436f82b9bf7058af748f66f0113656e9bb13a6daf1471dd1ab5121887a34e0f67e0b41",
+            "ec4aa1e338dc0dae05e9fc0dd478a956ac1b15aa2210e00298b4fd13c0504edb1896c0a153a02a0423e47943aa7a1600",
         ),
         (
             7,
-            "02a95ecc0d93d0fba44f020bed4d2a2a36cf034db223073c91575a27dad8d96381cb7b3fcb24cb5730f252fcb31de514",
+            "4ee006ad00a9a66c03185e8c04496c16821e56e6a1fa7d3c577f33a2b667210bcba01b2f4dab4396f35a81bfdc73e070",
         ),
         (
             8,
-            "ea6a1a8cd606dc73b886affc3d103e0b734eb958b96430717fda8c524695c774fd698345f469cc196b7579eb2cf2874b",
+            "5c907511902f95ced45236e0b84f9bc832ef717f60c2544f7b418d01822fea1cf0041e638b2ad9eeec1e10048a21f5e2",
         ),
         (
             9,
-            "dd77ad9b06af578820e2a93d952a13d338f099de4bc6d27ec038ef29b83f080cf86eb202ab9eb46aa4aae1b03938cff5",
+            "53c7490c9b16f12b70bd23e760029f9d73e942bba840f2f2a929df99d7a230d02f47b7b3f6b721500dcfa2fdc8b90087",
         ),
     ];
 

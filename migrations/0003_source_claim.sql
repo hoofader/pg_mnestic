@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: Apache-2.0
+-- SPDX-License-Identifier: MIT
 
 -- Async-ingestion lease. A worker claims a pending source by stamping claimed_at, runs the
 -- slow extraction without holding a row lock, then clears needs_extraction. If the worker

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for POST /v4/memories over the full stack: bearer auth via the
 //! api_key table, containerTag scoping, and a real engine (mock providers) writing to

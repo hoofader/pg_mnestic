@@ -25,12 +25,12 @@ migrations/0003_backfill_y.sql
 Shipped migrations are guarded by a checksum tripwire test (`shipped_migrations_are_frozen`
 in `crates/mnestic-store/src/lib.rs`). If you edit one, that test fails and points back here.
 
-This is also why the shipped migration files (`0001`-`0004`) still carry an
-`SPDX-License-Identifier: Apache-2.0` header even though the project relicensed to
-`AGPL-3.0-only`: their bytes are frozen, so changing the header would change the checksum and
-break every database that already applied them. They keep the header they shipped with; new
-migrations (`0005` onward) carry the current `AGPL-3.0-only` header. The project license is
-set by `LICENSE` and the workspace `license` field, not by a frozen file's comment.
+The MIT relicense was a one-time, deliberate exception to the append-only rule: it rewrote
+every migration's SPDX header to `MIT` and recomputed the frozen checksums in the same commit.
+A database created before that relicense applied the old-header migrations, so its recorded
+checksums no longer match; re-migrate from a fresh database (or update the `_sqlx_migrations`
+checksums) after upgrading. Going forward the rule holds: do not edit a shipped migration, add
+a new one. The project license is set by `LICENSE` and the workspace `license` field.
 
 ## Writing a new migration
 

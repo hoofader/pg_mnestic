@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for recency scoring in recall_memories: decay is on event time
 //! (valid_time), honors an as_of reference instant, and clamps a future-dated fact instead of

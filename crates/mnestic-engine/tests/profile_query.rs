@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Dockerized test for query-scoped profile: profile_query returns the cached
 //! profile plus the query-relevant memories, and a blank query returns the profile

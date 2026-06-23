@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! supermemory's single `containerTag` maps onto Mnestic's `(actor_id, container_tags)`
 //! (doc 04 §2). The mapping is reversible so a response can echo the exact tag the

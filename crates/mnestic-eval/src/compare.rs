@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Head-to-head comparison: run the SAME benchmark through several `MemoryBackend`s
 //! and report both the quantitative `MemScore` per backend and a qualitative

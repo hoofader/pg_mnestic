@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Run the Mnestic eval over a normalized dataset, against a live Postgres and real
 //! providers. Build with `--features real`.

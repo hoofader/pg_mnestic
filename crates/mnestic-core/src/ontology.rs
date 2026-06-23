@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! Lexical normalization and a small synonym ontology, so surface variants of a
 //! subject or attribute ("lives in", "current city", "Location:") collapse to one

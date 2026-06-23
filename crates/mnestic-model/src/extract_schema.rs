@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 //! JSON contract shared by the cloud extractor providers (OpenAI, Anthropic): the
 //! wire shape the model returns, the mapping onto the domain `Candidate`, the

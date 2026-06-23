@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
 #
 # Local stack: Postgres (with pgvector + pg_graphwright + pgsql-http), the server, and the
 # worker. `./quickstart.sh` brings it up and mints a key. Ports are published to 127.0.0.1
