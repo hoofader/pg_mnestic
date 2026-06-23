@@ -39,7 +39,7 @@ RUN git clone https://github.com/hoofader/pg_graphwright /tmp/pgw \
   && cd /tmp/pgw \
   && cargo pgrx install --release --no-default-features --features pg16 --pg-config /usr/bin/pg_config
 
-# pgsql-http: the in-database HTTP client the entity-extractor seam uses to reach the GLiNER
+# pgsql-http: the in-database HTTP client the entity-extractor extension point uses to reach the GLiNER
 # sidecar. A plain PGXS C build, no pgrx.
 RUN git clone https://github.com/pramsey/pgsql-http /tmp/http \
   && git -C /tmp/http checkout ${PGSQL_HTTP_REF} \

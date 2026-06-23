@@ -2,7 +2,7 @@
 
 The GLiNER entity-extraction sidecar for the knowledge graph. A small Node HTTP service that
 wraps [`graphwright-onnx`](https://github.com/hoofader/graphwright-onnx) (zero-shot NER through
-ONNX), so `pg_graphwright`'s extractor seam can reach real named-entity extraction instead of the
+ONNX), so `pg_graphwright`'s extractor extension point can reach real named-entity extraction instead of the
 built-in tokenizer. Memory text stays on your own infrastructure (no third-party call).
 
 ```bash

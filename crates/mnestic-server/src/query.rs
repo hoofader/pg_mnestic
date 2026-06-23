@@ -416,9 +416,9 @@ pub struct ProfileResponse {
     pub search_results: Option<ProfileSearchResults>,
 }
 
-/// `filters`, when present, is applied in Rust over the recall pool under `searchResults`, not
-/// pushed into the SQL. Same best-effort caveat as `/v4/search`: a match ranked below the
-/// over-fetch pool is not seen. The profile's static/dynamic arrays are not filtered.
+/// `filters`, when present, are pushed into the recall SQL behind `searchResults`, so the
+/// query-scoped results are filtered exactly, with no over-fetch caveat. The profile's
+/// static/dynamic arrays are not filtered.
 pub async fn profile(
     State(state): State<AppState>,
     headers: HeaderMap,

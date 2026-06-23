@@ -1,12 +1,16 @@
 # Mnestic
 
-**A self-hosted, drop-in [supermemory](https://supermemory.ai) replacement.** Point any
-supermemory SDK or MCP client at Mnestic and it works unchanged, with your data in your own
-Postgres instead of a SaaS.
+[![CI](https://github.com/hoofader/pg_mnestic/actions/workflows/ci.yml/badge.svg)](https://github.com/hoofader/pg_mnestic/actions/workflows/ci.yml)
 
-It is a Postgres-native long-term memory engine: vector + lexical search, tenant isolation via
-RLS, bitemporal correctness, and an RLS-aware knowledge graph, all in the customer's own
-database. Run it as a server (`mnestic-server`) or embed it as a Rust library (`mnestic-engine`).
+**Long-term memory for AI agents, in the Postgres you already run, and a drop-in backend for the
+[supermemory](https://supermemory.ai) SDK.**
+
+Mnestic gives agents persistent memory: it extracts facts from conversations, recalls them across
+sessions, and supersedes them when they change, with no memory SaaS in the path. Your users'
+memories live in your own Postgres, and tenant isolation is enforced by the database (RLS), not
+by a field the caller must remember to pass. Run it as a server or embed it as a Rust library.
+
+> Mnestic is the product; `pg_mnestic` is this repo and the optional accelerator extension.
 
 ## Drop-in supermemory compatibility
 
@@ -26,45 +30,82 @@ await client.add({ content: 'I ship on Fridays.', containerTag: 'me' });
 const { results } = await client.search.memories({ q: 'when do I ship', containerTag: 'me' });
 ```
 
-It is the same for the Python SDK (`base_url=`) and for MCP clients (point them at
-`http://localhost:8080/mcp`). This is a tested gate, not a claim: CI drives the **real**
-`supermemory` npm SDK against a live Mnestic on every push (the `sdk conformance` job), through
-add, search, profile, versioned update, and forget.
+Same for the Python SDK (`base_url=`) and for MCP clients (point them at
+`http://localhost:8080/mcp`). Two claims, kept separate on purpose:
 
-- What works and the out-of-scope SaaS surface: [`docs/04-compatibility.md`](docs/04-compatibility.md).
-- Pointing SDK and MCP clients at it: [`docs/05-clients.md`](docs/05-clients.md).
-- A head-to-head harness (Mnestic vs supermemory over one wire): [`docs/06-comparison.md`](docs/06-comparison.md).
+- **Wire compatibility is tested, not asserted.** CI drives the real `supermemory` npm SDK
+  against a live Mnestic on every push (the `sdk conformance` job): add, search, profile,
+  versioned update, forget.
+- **Recall-quality parity is not yet benchmarked.** The head-to-head harness
+  ([`docs/06-comparison.md`](docs/06-comparison.md)) is built, but the numbers are not published
+  yet. We will not claim parity until it shows parity.
 
-## Docs
+What works and the out-of-scope SaaS surface: [`docs/04-compatibility.md`](docs/04-compatibility.md).
+Pointing SDK and MCP clients at it: [`docs/05-clients.md`](docs/05-clients.md).
 
-Design docs are the source of truth, see [`docs/`](docs/):
+## How it works
 
-- [`docs/01-high-level-plan.md`](docs/01-high-level-plan.md)
-- [`docs/02-architecture.md`](docs/02-architecture.md)
-- [`docs/03-low-level-design.md`](docs/03-low-level-design.md)
-- [`docs/04-compatibility.md`](docs/04-compatibility.md) - the supermemory wire surface, what is and isn't implemented.
-- [`docs/05-clients.md`](docs/05-clients.md) - pointing supermemory SDK clients at Mnestic.
-- [`docs/06-comparison.md`](docs/06-comparison.md) - the head-to-head harness: Mnestic vs supermemory over one wire.
+- **Write (`add`):** an LLM extracts atomic facts from the text; each is embedded (`pgvector`)
+  and indexed for lexical search. A new fact that contradicts an older one supersedes it, kept as
+  a version (bitemporal), so recall sees the current truth and history is not lost.
+- **Recall (`search`):** hybrid retrieval (vector + lexical) fused with Reciprocal Rank Fusion,
+  an optional self-hosted reranker, and recency decay on event time.
+- **Isolation:** every row carries a `tenant_id`, and Postgres RLS (`FORCE`) keyed on the
+  authenticated key blocks cross-tenant reads even if a query forgets the filter. The server runs
+  as a non-superuser role, so the database enforces the boundary, not the application.
+- **Profiles and graph:** durable facts roll into a per-actor profile; an RLS-aware knowledge
+  graph (`pg_graphwright`) links memories that share an entity.
 
-Operational guides: [`DEPLOYMENT.md`](DEPLOYMENT.md), [`MIGRATIONS.md`](MIGRATIONS.md),
-[`SECRETS.md`](SECRETS.md), [`GDPR.md`](GDPR.md).
+## How it compares
+
+| | Where memory lives | Tenant isolation | Extraction + supersession | supermemory SDK |
+|---|---|---|---|---|
+| supermemory (hosted) | their cloud Postgres | `containerTag` filter | yes | native |
+| mem0 | pluggable store | application-level | yes | no |
+| raw `pgvector` + a prompt | your Postgres | you build it | you build it | no |
+| **Mnestic** | **your Postgres** | **RLS, database-enforced** | **yes** | **drop-in** |
+
+The honest differentiator: supermemory scopes by a `containerTag` the application passes; Mnestic
+enforces tenant isolation in the database, so a request cannot read another tenant's rows even if
+the application forgets the filter.
 
 ## Quick start
-
-Bring up Postgres, the server, and the worker, and mint a key, with one command:
 
 ```sh
 ./quickstart.sh
 ```
 
-It builds the images (first run is slow: it compiles the Postgres extensions and the server),
-starts the stack via `docker-compose.yml`, waits for health, and prints a tenant key plus a
-`curl` example. For real memory quality, copy `.env.example` to `.env` and set `OPENAI_API_KEY`
-(embeddings) and `ANTHROPIC_API_KEY` (extraction) first; without them it runs with mock
-providers (the API works, but recall is non-semantic). The server listens on
-`http://localhost:8080` and speaks the supermemory wire API and MCP, so point a supermemory SDK
-or MCP client straight at it (see [`docs/05-clients.md`](docs/05-clients.md)). Stop with
-`docker compose down` (`-v` also wipes the data).
+Brings up Postgres, the server, and the worker, and prints a tenant key plus a `curl` example. It
+generates database passwords into `.env` on first run, so the one-command flow needs no editing.
+For real recall, set `OPENAI_API_KEY` (embeddings) and `ANTHROPIC_API_KEY` (extraction) in `.env`
+first; without them it runs with mock providers (the API works, but recall is non-semantic). The
+first build is slow because it compiles the Postgres extensions and the server. The server listens
+on `http://localhost:8080`; point a supermemory SDK or MCP client straight at it
+([`docs/05-clients.md`](docs/05-clients.md)). Stop with `docker compose down` (`-v` also wipes the
+data). Optional sidecars: `./quickstart.sh --rerank` (the reranker) and `--graph` (the GLiNER
+entity extractor).
+
+## Status
+
+`0.1.0`, MIT. The supermemory wire API is conformance-gated in CI; tenant isolation is enforced by
+RLS under a non-superuser role and tested. Not done yet: a published recall-quality benchmark
+(the harness exists), the `mnestic-py` and `mnestic-node` language bindings, and sharper graph
+entity extraction (the default tokenizer is coarse; the optional GLiNER sidecar fixes it).
+`pg_graphwright` is an early-stage extension. Run it, and tell us where recall misses.
+
+## Docs
+
+Design docs are the source of truth, see [`docs/`](docs/):
+
+- [`docs/01-high-level-plan.md`](docs/01-high-level-plan.md) - the thesis and roadmap.
+- [`docs/02-architecture.md`](docs/02-architecture.md)
+- [`docs/03-low-level-design.md`](docs/03-low-level-design.md)
+- [`docs/04-compatibility.md`](docs/04-compatibility.md) - the supermemory wire surface, what is and isn't implemented.
+- [`docs/05-clients.md`](docs/05-clients.md) - pointing supermemory SDK and MCP clients at Mnestic.
+- [`docs/06-comparison.md`](docs/06-comparison.md) - the head-to-head harness: Mnestic vs supermemory over one wire.
+
+Operational guides: [`DEPLOYMENT.md`](DEPLOYMENT.md), [`MIGRATIONS.md`](MIGRATIONS.md),
+[`SECRETS.md`](SECRETS.md), [`GDPR.md`](GDPR.md).
 
 ## Crates
 
@@ -105,7 +146,7 @@ cargo test --workspace --all-features
 live cloud-provider tests are `#[ignore]`, so no API keys are needed.
 
 The supermemory SDK conformance suite drives the real `supermemory` npm SDK against a live
-pg_mnestic; CI runs it on every push and you can run it locally:
+Mnestic; CI runs it on every push and you can run it locally:
 
 ```sh
 conformance/run.sh
@@ -118,9 +159,11 @@ cargo run --features serve --bin serve     # needs DATABASE_URL and provider key
 cargo run --features cli --bin issue-key <tenant-external-id>   # mint a tenant key
 ```
 
-Set `MNESTIC_MOCK_PROVIDERS=1` to run keyless with mock providers (conformance and local demos
-only, never production). See `DEPLOYMENT.md` for TLS, the worker, the reranker, and the graph
-extractor.
+`DATABASE_URL` is the non-superuser runtime role; set `MNESTIC_MIGRATION_DATABASE_URL` (a
+superuser) to have the server run migrations and provision the runtime role separately, so it
+serves under RLS. Set `MNESTIC_MOCK_PROVIDERS=1` to run keyless with mock providers (conformance
+and local demos only, never production). See `DEPLOYMENT.md` for TLS, the migration/runtime
+roles, the worker, the reranker, and the graph extractor.
 
 ## License
 

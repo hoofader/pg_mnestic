@@ -39,7 +39,7 @@ The one-line positioning:
 ### Resolving the "reuse their shells" question
 We do not build the shells and we do not fork them. We become a drop-in backend. `claude-supermemory` is a Claude Code plugin that calls the `supermemory` SDK and already reads a `SUPERMEMORY_API_URL` base-URL override; the SDKs are generated from a published OpenAPI spec. Serving the subset of endpoints those shells call, with `sm_`-prefixed keys, makes them work unchanged. This is a Phase 2 deliverable. The core schema is designed now to map cleanly to that wire format, so Phase 2 is a translation layer over a stable core, not a migration.
 
-## 3. Competitive landscape & the wedge
+## 3. Competition & the wedge
 
 | Product | Model | Language | Where memory lives |
 |---|---|---|---|

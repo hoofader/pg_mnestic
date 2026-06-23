@@ -1,8 +1,11 @@
 # Head-to-head comparison
 
+> Status: the harness is built and tested, but it has not been run for published numbers yet. No
+> recall-quality parity is claimed until it is run and the results are posted here.
+
 The `compare` harness runs the SAME benchmark through two memory engines and reports
 how they differ. Because both engines speak the supermemory wire API, one HTTP client
-pointed at two base URLs drives pg_mnestic's server and `api.supermemory.ai`
+pointed at two base URLs drives Mnestic's server and `api.supermemory.ai`
 identically: same cases, same answerer, same judge. The only variable is the engine
 behind the URL, so the comparison is apples-to-apples.
 

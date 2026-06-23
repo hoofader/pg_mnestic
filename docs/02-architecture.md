@@ -33,7 +33,7 @@ Mnestic is structured as four layers. Reading top to bottom: client applications
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-The defining choice: the bottom layer is **the customer's database**, not infrastructure Mnestic operates. Everything above it is a library they embed. The Phase 2 compatibility layer is an optional translation seam, not a change to the core.
+The defining choice: the bottom layer is **the customer's database**, not infrastructure Mnestic operates. Everything above it is a library they embed. The Phase 2 compatibility layer is an optional translation extension point, not a change to the core.
 
 ## 2. Components
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Migration 0009 installs the `http` extension (from the image) and the `mnestic_gliner_extract`
-//! function that the pg_graphwright extractor seam calls to reach the GLiNER sidecar. This guards
+//! function that the pg_graphwright extractor extension point calls to reach the GLiNER sidecar. This guards
 //! the image carrying pgsql-http and the function being valid; the live GLiNER path (the sidecar +
 //! the model) is exercised out of band, since CI carries no model.
 
@@ -60,7 +60,7 @@ async fn migration_installs_http_and_extractor_function() {
             .get(0);
     assert!(http, "the image carries pgsql-http and 0009 created the extension");
 
-    // The extractor seam function is installed (opt-in; graphwright.extractor is not set here, so
+    // The extractor extension point function is installed (opt-in; graphwright.extractor is not set here, so
     // the graph still uses the built-in tokenizer until an operator activates it).
     let func: bool = sqlx::query(
         "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'mnestic_gliner_extract')",

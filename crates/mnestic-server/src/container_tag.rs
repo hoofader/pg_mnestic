@@ -6,7 +6,7 @@
 //!
 //! Default convention (configurable later): a trailing `user:<id>` is the actor; any
 //! preceding segments become container tags grouped as `key:value` pairs; a tag with no
-//! `:` is the actor outright. The load-bearing invariant is `reconstruct(parse(tag)) ==
+//! `:` is the actor outright. The invariant that must hold is `reconstruct(parse(tag)) ==
 //! tag`, covered by tests.
 //!
 //! Out of scope here, owed by the endpoint layer: validating the supermemory pattern

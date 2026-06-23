@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// HTTP wrapper around graphwright-onnx's GLiNER extractor. pg_graphwright's extractor seam is a
+// HTTP wrapper around graphwright-onnx's GLiNER extractor. pg_graphwright's extractor extension point is a
 // SQL function f(text) -> text[]; the in-database side (the `http` extension) POSTs here and this
 // returns the entity surfaces. Kept dependency-light: Node's built-in http server, the model
 // loaded once at startup. A slow load never blocks a memory write, since extraction runs in the
@@ -26,7 +26,7 @@ extractor
     process.exit(1);
   });
 
-// graphwright's ExtractedEntities splits mentions into people/places/concepts; the seam wants a
+// graphwright's ExtractedEntities splits mentions into people/places/concepts; the extension point wants a
 // flat list of surfaces, so fold the three kinds into one array.
 function surfaces(extracted) {
   const out = [];

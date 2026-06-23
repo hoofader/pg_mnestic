@@ -16,7 +16,7 @@ The authoritative contract is the official TypeScript SDK `github.com/supermemor
 ### `claude-supermemory` (Claude Code plugin)
 - It is a Claude Code **plugin** using lifecycle hooks (`SessionStart` injects context, `Stop` saves the session), not an MCP server.
 - It depends on the `supermemory` npm SDK and instantiates the client with `baseURL = process.env.SUPERMEMORY_API_URL || 'https://api.supermemory.ai'`.
-- Env it reads: `SUPERMEMORY_CC_API_KEY` (required, `sm_...`), `SUPERMEMORY_API_URL` (base-URL override, this is our seam), `SUPERMEMORY_DEBUG` (optional).
+- Env it reads: `SUPERMEMORY_CC_API_KEY` (required, `sm_...`), `SUPERMEMORY_API_URL` (base-URL override, this is our extension point), `SUPERMEMORY_DEBUG` (optional).
 - SDK calls it makes: `client.add({ content, containerTag, metadata, customId, entityContext })`, `client.search.memories({ q, containerTag, limit })`, `client.profile({ containerTag, q })`.
 
 So the REST subset we must serve for this shell is small:
