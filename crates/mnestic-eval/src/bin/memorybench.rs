@@ -22,7 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use mnestic_core::{Embedder, Extractor};
 use mnestic_engine::Engine;
 use mnestic_eval::providers::{AnthropicAnswerer, AnthropicJudge, AnthropicReranker, AnthropicRewriter};
-use mnestic_eval::{dataset, evaluate_cases, ingest_cases};
+use mnestic_eval::{dataset, evaluate_cases, ingest_cases, EngineBackend};
 use mnestic_model::{AnthropicExtractor, OpenAiEmbedder};
 use mnestic_store::{run_migrations, Store};
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -129,7 +129,8 @@ async fn main() -> Result<()> {
     let mode_names: Vec<&str> = modes.iter().map(|m| m.name).collect();
     eprintln!("ingesting once, then evaluating modes: {}", mode_names.join(", "));
     let base = Engine::new(Store::new(pool.clone()), embedder.clone(), extractor.clone());
-    let ingest = ingest_cases(&base, tenant, &cases).await;
+    let base_backend = EngineBackend::new(Arc::new(base), tenant, "pg_mnestic");
+    let ingest = ingest_cases(&base_backend, &cases).await;
     if !ingest.errors.is_empty() {
         eprintln!("{} case(s) failed to ingest (their questions are skipped):", ingest.errors.len());
         for e in &ingest.errors {
@@ -141,8 +142,9 @@ async fn main() -> Result<()> {
     let mut summary: Vec<(&str, f64)> = Vec::new();
     for mode in &modes {
         let engine = engine_for(mode, &pool, &embedder, &extractor, &anthropic_key);
+        let backend = EngineBackend::new(Arc::new(engine), tenant, mode.name);
         let report =
-            evaluate_cases(&engine, tenant, &answerer, &judge, recall_limit, &cases, &ingest.failed)
+            evaluate_cases(&backend, &answerer, &judge, recall_limit, &cases, &ingest.failed)
                 .await;
         let s = &report.score;
         println!(

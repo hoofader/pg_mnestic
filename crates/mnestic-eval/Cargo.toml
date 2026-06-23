@@ -34,6 +34,11 @@ testcontainers = "0.27"
 name = "memorybench"
 required-features = ["real"]
 
+# Head-to-head over the supermemory wire: two HTTP backends + Claude answer/judge.
+[[bin]]
+name = "compare"
+required-features = ["real"]
+
 # Dataset converter: pure, no providers or keys, so no feature gate.
 [[bin]]
 name = "lme-convert"

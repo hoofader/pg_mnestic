@@ -13,6 +13,7 @@ Design docs are the source of truth, see [`docs/`](docs/):
 - [`docs/03-low-level-design.md`](docs/03-low-level-design.md)
 - [`docs/04-compatibility.md`](docs/04-compatibility.md) - the supermemory wire surface, what is and isn't implemented.
 - [`docs/05-clients.md`](docs/05-clients.md) - pointing supermemory SDK clients at pg_mnestic.
+- [`docs/06-comparison.md`](docs/06-comparison.md) - the head-to-head harness: pg_mnestic vs supermemory over one wire.
 
 Operational guides: [`DEPLOYMENT.md`](DEPLOYMENT.md), [`MIGRATIONS.md`](MIGRATIONS.md),
 [`SECRETS.md`](SECRETS.md), [`GDPR.md`](GDPR.md).

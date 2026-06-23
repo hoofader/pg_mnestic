@@ -12,7 +12,7 @@ use mnestic_core::{Embedder, Extractor};
 use mnestic_engine::Engine;
 use mnestic_eval::dataset::Session;
 use mnestic_eval::mock::{EchoAnswerer, SubstringJudge};
-use mnestic_eval::{run_eval, Case, Qa, Turn};
+use mnestic_eval::{run_eval, Case, EngineBackend, Qa, Turn};
 use mnestic_model::{MockEmbedder, MockExtractor};
 use mnestic_store::{run_migrations, Store};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
@@ -87,7 +87,8 @@ async fn harness_ingests_recalls_answers_and_scores() {
         }],
     }];
 
-    let report = run_eval(&engine, tenant, &EchoAnswerer, &SubstringJudge, 10, &cases).await;
+    let backend = EngineBackend::new(Arc::new(engine), tenant, "pg_mnestic");
+    let report = run_eval(&backend, &EchoAnswerer, &SubstringJudge, 10, &cases).await;
 
     assert!(report.errors.is_empty(), "unexpected errors: {:?}", report.errors);
     assert_eq!(report.score.n, 1);

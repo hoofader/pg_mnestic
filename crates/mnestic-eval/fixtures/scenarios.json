@@ -1,0 +1,150 @@
+[
+  {
+    "id": "pref-update",
+    "sessions": [
+      {
+        "date": "2024-01-05T10:00:00Z",
+        "turns": [
+          { "role": "user", "content": "My favorite coffee order is a flat white." },
+          { "role": "assistant", "content": "Got it, a flat white is your favorite." }
+        ]
+      },
+      {
+        "date": "2024-03-20T09:30:00Z",
+        "turns": [
+          { "role": "user", "content": "I switched my go-to coffee. These days I always order an oat milk latte instead of a flat white." },
+          { "role": "assistant", "content": "Noted, an oat milk latte is now your usual." }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question": "What is my current favorite coffee order?",
+        "answer": "oat milk latte",
+        "question_type": "knowledge-update",
+        "abstention": false
+      }
+    ]
+  },
+  {
+    "id": "contradiction",
+    "sessions": [
+      {
+        "date": "2024-02-01T14:00:00Z",
+        "turns": [
+          { "role": "user", "content": "I'm allergic to peanuts, so please keep that in mind for any recipes." },
+          { "role": "assistant", "content": "Understood, I'll avoid peanuts." }
+        ]
+      },
+      {
+        "date": "2024-02-02T11:00:00Z",
+        "turns": [
+          { "role": "user", "content": "Actually I was wrong earlier. I'm not allergic to peanuts, I'm allergic to tree nuts like almonds and cashews." },
+          { "role": "assistant", "content": "Thanks for the correction, tree nuts it is." }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question": "Which nuts am I actually allergic to?",
+        "answer": "tree nuts",
+        "question_type": "knowledge-update",
+        "abstention": false
+      }
+    ]
+  },
+  {
+    "id": "temporal",
+    "sessions": [
+      {
+        "date": "2024-04-10T08:00:00Z",
+        "turns": [
+          { "role": "user", "content": "I started a new job at Acme Corp today." },
+          { "role": "assistant", "content": "Congrats on the new role at Acme Corp." }
+        ]
+      },
+      {
+        "date": "2024-04-24T08:00:00Z",
+        "turns": [
+          { "role": "user", "content": "Two weeks in at Acme and the onboarding is finally done." },
+          { "role": "assistant", "content": "Glad onboarding wrapped up." }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question": "On what date did I start my job at Acme Corp?",
+        "answer": "April 10, 2024",
+        "question_type": "temporal-reasoning",
+        "abstention": false
+      }
+    ]
+  },
+  {
+    "id": "multi-session",
+    "sessions": [
+      {
+        "date": "2024-05-01T12:00:00Z",
+        "turns": [
+          { "role": "user", "content": "I'm planning a trip to Lisbon next month." },
+          { "role": "assistant", "content": "Lisbon sounds great." }
+        ]
+      },
+      {
+        "date": "2024-05-08T12:00:00Z",
+        "turns": [
+          { "role": "user", "content": "For that trip I mentioned, I'll be traveling with my sister Maria." },
+          { "role": "assistant", "content": "Noted, you and Maria are going." }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question": "Who am I traveling to Lisbon with?",
+        "answer": "Maria",
+        "question_type": "multi-session",
+        "abstention": false
+      }
+    ]
+  },
+  {
+    "id": "abstention",
+    "sessions": [
+      {
+        "date": "2024-06-01T16:00:00Z",
+        "turns": [
+          { "role": "user", "content": "I just adopted a dog named Rex." },
+          { "role": "assistant", "content": "Congrats on adopting Rex." }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question": "What breed is my dog Rex?",
+        "answer": "The breed of Rex was never mentioned in the conversations.",
+        "question_type": "single-session-user",
+        "abstention": true
+      }
+    ]
+  },
+  {
+    "id": "single-fact",
+    "sessions": [
+      {
+        "date": "2024-06-10T09:00:00Z",
+        "turns": [
+          { "role": "user", "content": "My daughter's birthday is on the 14th of July." },
+          { "role": "assistant", "content": "I'll remember her birthday is July 14." }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "question": "When is my daughter's birthday?",
+        "answer": "July 14",
+        "question_type": "single-session-user",
+        "abstention": false
+      }
+    ]
+  }
+]

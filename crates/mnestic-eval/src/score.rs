@@ -19,6 +19,13 @@ pub struct QuestionResult {
     /// Abstention questions form their own breakdown bucket, to match LongMemEval's
     /// separate abstention line rather than pooling them into a content type.
     pub abstention: bool,
+    // The qualitative payload for the side-by-side comparison. `MemScore` ignores
+    // these; they carry the per-question detail a human reads to see WHY two backends
+    // disagreed, not just that they did.
+    pub question: String,
+    pub gold: String,
+    pub predicted: String,
+    pub recalled: Vec<String>,
 }
 
 /// Accuracy within one question category, for the per-type breakdown LongMemEval
@@ -102,6 +109,10 @@ mod tests {
             recalled_context_tokens: tokens,
             category: category.map(str::to_string),
             abstention: false,
+            question: String::new(),
+            gold: String::new(),
+            predicted: String::new(),
+            recalled: Vec::new(),
         }
     }
 
